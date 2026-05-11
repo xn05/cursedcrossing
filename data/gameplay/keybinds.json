@@ -4,6 +4,7 @@
 		"up": ["w", "up"],
 		"down": ["s", "down"],
 		"left": ["a", "left"],
-		"right": ["d", "right"]
+		"right": ["d", "right"],
+		"pause": ["escape"]
 	}
 }

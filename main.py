@@ -43,7 +43,7 @@ class Game:
         self.menu_font = pygame.font.Font(font_path, 6)
         self.entity_defs = load_entity_defs(data_dir)
         self.textures = TextureManager(textures_dir)
-        self.movement = self.load_movement(os.path.join(gameplay_dir, "movement.json"))
+        self.movement = self.load_movement(os.path.join(gameplay_dir, "keybinds.json"))
         regions_path = os.path.join(config_dir, "regions.json")
         regions, default_region = load_regions(regions_path)
         region_id = default_region or next(iter(regions.keys()), None)
@@ -615,6 +615,12 @@ class Game:
         if self.state == "menu":
             self.draw_menu_background()
             self.draw_menu()
+        elif self.state == "pause":
+            self.draw_background()
+            self.draw_region()
+            self.draw_blocks()
+            self.draw_player()
+            self.draw_pause_overlay()
         else:
             self.draw_background()
             self.draw_region()
@@ -629,8 +635,16 @@ class Game:
         if self.state == "menu":
             self.handle_menu_input(event)
             return
+        if self.state == "pause":
+            self.handle_pause_input(event)
+            return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
             self.reset()
+        # Check for pause key
+        if event.type == pygame.KEYDOWN:
+            pause_keys = self.movement["bindings"].get("pause", set())
+            if event.key in pause_keys:
+                self.state = "pause"
 
     def menu_buttons(self):
         layout = self.get_menu_layout()
@@ -641,6 +655,16 @@ class Game:
         start_rect = pygame.Rect(center_x, layout["buttons_top"], button_w, button_h)
         settings_rect = pygame.Rect(center_x, layout["buttons_top"] + button_h + button_gap, button_w, button_h)
         return {"start": start_rect, "settings": settings_rect}
+
+    def pause_menu_buttons(self):
+        button_w = 120
+        button_h = 18
+        button_gap = 8
+        center_x = LOGICAL_WIDTH // 2 - button_w // 2
+        center_y = LOGICAL_HEIGHT // 2
+        resume_rect = pygame.Rect(center_x, center_y - button_h - button_gap // 2, button_w, button_h)
+        title_rect = pygame.Rect(center_x, center_y + button_gap // 2, button_w, button_h)
+        return {"resume": resume_rect, "title": title_rect}
 
     def draw_menu(self):
         layout = self.get_menu_layout()
@@ -654,6 +678,34 @@ class Game:
             color = COLORS["warning"] if self.hovered_button == key else COLORS["track"]
             pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
             label = "START GAME" if key == "start" else "SETTINGS"
+            label_surface = self.menu_font.render(label, False, COLORS["text"])
+            label_pos = (
+                rect.centerx - label_surface.get_width() // 2,
+                rect.centery - label_surface.get_height() // 2,
+            )
+            self.render_surface.blit(label_surface, label_pos)
+
+    def draw_pause_overlay(self):
+        # Draw semi-transparent overlay
+        overlay = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(100)
+        self.render_surface.blit(overlay, (0, 0))
+
+        # Draw pause text
+        pause_text_surface = self.menu_font.render("PAUSED", False, COLORS["warning"])
+        pause_text_pos = (
+            LOGICAL_WIDTH // 2 - pause_text_surface.get_width() // 2,
+            LOGICAL_HEIGHT // 2 - 40,
+        )
+        self.render_surface.blit(pause_text_surface, pause_text_pos)
+
+        # Draw buttons
+        buttons = self.pause_menu_buttons()
+        for key, rect in buttons.items():
+            color = COLORS["warning"] if self.hovered_button == key else COLORS["track"]
+            pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
+            label = "RESUME" if key == "resume" else "TITLE"
             label_surface = self.menu_font.render(label, False, COLORS["text"])
             label_pos = (
                 rect.centerx - label_surface.get_width() // 2,
@@ -695,6 +747,28 @@ class Game:
             self.select_previous_character()
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
             self.select_next_character()
+
+    def handle_pause_input(self, event):
+        buttons = self.pause_menu_buttons()
+        if event.type == pygame.MOUSEMOTION:
+            pos = self.scale_mouse_pos(event.pos)
+            self.hovered_button = None
+            for key, rect in buttons.items():
+                if rect.collidepoint(pos):
+                    self.hovered_button = key
+                    break
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            pos = self.scale_mouse_pos(event.pos)
+            if buttons["resume"].collidepoint(pos):
+                self.state = "play"
+            elif buttons["title"].collidepoint(pos):
+                self.state = "menu"
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+            self.state = "play"
+        # ESC to resume
+        pause_keys = self.movement["bindings"].get("pause", set())
+        if event.type == pygame.KEYDOWN and event.key in pause_keys:
+            self.state = "play"
 
     def scale_mouse_pos(self, pos):
         x = int(pos[0] * LOGICAL_WIDTH / WINDOW_WIDTH)
