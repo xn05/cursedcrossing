@@ -1,16 +1,28 @@
 {
   "id": "east_norton",
   "tile_size": 25,
-  "size": [12, 7],
+  "size": [50, 50],
   "player_spawn": [6, 3],
   "cover_screen": true,
   "color": [20, 22, 26],
   "border_color": [36, 38, 44],
   "border_enabled": false,
-  "rain_enabled": true,
+  "rain_enabled": false,
   "fog": {
     "enabled": true,
     "color": [110, 120, 130],
     "alpha": 50
-  }
+  },
+  "backgrounds": [
+  ],
+  "blocks": [
+    {
+      "id": "small_star_tree",
+      "pos": [8, 6]
+    },
+    {
+      "id": "small_star_tree",
+      "pos": [14, 10]
+    }
+  ]
 }

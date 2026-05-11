@@ -7,6 +7,7 @@ class TextureManager:
     def __init__(self, root_dir):
         self.root_dir = root_dir
         self.cache = {}
+        self.size_cache = {}
 
     def get(self, texture_path, size):
         key = (texture_path, size)
@@ -25,6 +26,21 @@ class TextureManager:
         placeholder.fill((160, 160, 160))
         self.cache[key] = placeholder
         return placeholder
+
+    def get_image_size(self, texture_path):
+        if not texture_path:
+            return None
+        if texture_path in self.size_cache:
+            return self.size_cache[texture_path]
+        full_path = f"{self.root_dir}/{texture_path}"
+        try:
+            surface = pygame.image.load(full_path)
+        except FileNotFoundError:
+            self.size_cache[texture_path] = None
+            return None
+        size = surface.get_size()
+        self.size_cache[texture_path] = size
+        return size
 
 
 class Entity:

@@ -1,0 +1,11 @@
+﻿{
+  "id": "small_star_tree",
+  "name": "Small Star Tree",
+  "texture": "blocks/topdownbushes/Assets/Bush_simple1_1.png",
+  "size": [1, 1],
+  "origin": [1, 1],
+  "solid_rects": [
+    [0, 0, 1, 1]
+  ],
+  "passable_rects": []
+}

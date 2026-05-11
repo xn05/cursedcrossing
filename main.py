@@ -7,6 +7,7 @@ import sys
 import pygame
 
 from animation_loader import load_animation
+from block_loader import load_block_defs
 from character_loader import load_characters
 from entity_loader import load_entity_defs
 from entities import TextureManager
@@ -52,6 +53,13 @@ class Game:
         self.region = self.load_region(region_path)
         self.region_origin = self.get_region_origin()
 
+        blocks_path = os.path.join(base_dir, "data", "blocks", "blocks.json")
+        self.block_defs = load_block_defs(blocks_path, base_dir)
+        self.blocks = self.build_blocks()
+        self.backgrounds = self.build_backgrounds()
+        self.camera = pygame.Vector2(0, 0)
+        self.frame_cache = {}
+
         rain_def = self.entity_defs.get("environment.rain", {})
         self.rain_frequency = rain_def.get("frequency", RAIN_DROPS)
         self.rain_direction_deg = float(rain_def.get("direction_deg", 200))
@@ -88,6 +96,7 @@ class Game:
 
     def reset(self):
         self.reset_player()
+        self.update_camera()
         self.state = "play"
         self.hovered_button = None
         self.hovered_arrow = None
@@ -127,6 +136,8 @@ class Game:
                 "alpha": int(fog.get("alpha", FOG_ALPHA)),
             },
             "tiles": data.get("tiles", []),
+            "blocks": data.get("blocks", []),
+            "backgrounds": data.get("backgrounds", []),
         }
 
     def get_region_origin(self):
@@ -139,6 +150,147 @@ class Game:
         origin_x = (LOGICAL_WIDTH - region_w) // 2
         origin_y = (LOGICAL_HEIGHT - region_h) // 2
         return pygame.Vector2(origin_x, origin_y)
+
+    def get_region_pixel_size(self):
+        width, height = self.region["size"]
+        tile_size = self.region["tile_size"]
+        return width * tile_size, height * tile_size
+
+    def get_player_anchor(self):
+        tile_size = self.region["tile_size"]
+        return self.player_pos + pygame.Vector2(tile_size / 2, tile_size / 2)
+
+    def get_camera_offset(self):
+        world_w, world_h = self.get_region_pixel_size()
+        target = self.get_player_anchor()
+        cam_x = target.x - LOGICAL_WIDTH / 2
+        cam_y = target.y - LOGICAL_HEIGHT / 2
+
+        if world_w <= LOGICAL_WIDTH:
+            cam_x = -(LOGICAL_WIDTH - world_w) / 2
+        else:
+            cam_x = max(0, min(cam_x, world_w - LOGICAL_WIDTH))
+
+        if world_h <= LOGICAL_HEIGHT:
+            cam_y = -(LOGICAL_HEIGHT - world_h) / 2
+        else:
+            cam_y = max(0, min(cam_y, world_h - LOGICAL_HEIGHT))
+
+        return pygame.Vector2(cam_x, cam_y)
+
+    def update_camera(self):
+        self.camera = self.get_camera_offset()
+
+    def build_blocks(self):
+        blocks = []
+        tile_size = self.region["tile_size"]
+        for placement in self.region.get("blocks", []):
+            block_id = placement.get("id")
+            if not block_id:
+                continue
+            block_def = self.block_defs.get(block_id)
+            if not block_def:
+                continue
+            pos = placement.get("pos", [0, 0])
+            anchor = pygame.Vector2(pos[0] * tile_size, pos[1] * tile_size)
+            origin_tiles = pygame.Vector2(block_def.get("origin", [0, 0]))
+            size_tiles = block_def.get("size", [1, 1])
+            origin = origin_tiles * tile_size
+            block_size = (int(size_tiles[0] * tile_size), int(size_tiles[1] * tile_size))
+            sprite_size, sprite_offset = self.get_block_sprite_layout(block_def, block_size)
+            solid_rects = self.scale_rects(block_def.get("solid_rects", []), tile_size)
+            passable_rects = self.scale_rects(block_def.get("passable_rects", []), tile_size)
+
+            draw_pos = anchor - origin
+            world_solids = []
+            for rect in solid_rects:
+                world_solids.append(
+                    pygame.Rect(
+                        int(draw_pos.x + rect[0]),
+                        int(draw_pos.y + rect[1]),
+                        int(rect[2]),
+                        int(rect[3]),
+                    )
+                )
+            blocks.append(
+                {
+                    "definition": block_def,
+                    "draw_pos": draw_pos,
+                    "block_size": block_size,
+                    "sprite_size": sprite_size,
+                    "sprite_offset": sprite_offset,
+                    "solid_rects": world_solids,
+                    "passable_rects": passable_rects,
+                }
+            )
+        return blocks
+
+    def get_block_sprite_layout(self, block_def, block_size):
+        texture_path = block_def.get("texture")
+        texture_override = block_def.get("texture_size")
+        stretch_to_fit = block_def.get("stretch_to_fit", True)
+        if stretch_to_fit:
+            return block_size, pygame.Vector2(0, 0)
+
+        if texture_override:
+            native_size = (int(texture_override[0]), int(texture_override[1]))
+        else:
+            native_size = self.textures.get_image_size(texture_path)
+        if not native_size or native_size[0] <= 0 or native_size[1] <= 0:
+            return block_size, pygame.Vector2(0, 0)
+
+        scale = block_size[0] / native_size[0]
+        sprite_w = block_size[0]
+        sprite_h = max(1, int(native_size[1] * scale))
+        offset_y = block_size[1] - sprite_h
+        return (sprite_w, sprite_h), pygame.Vector2(0, offset_y)
+
+    def scale_rects(self, rects, tile_size):
+        scaled = []
+        for rect in rects:
+            scaled.append(
+                [
+                    rect[0] * tile_size,
+                    rect[1] * tile_size,
+                    rect[2] * tile_size,
+                    rect[3] * tile_size,
+                ]
+            )
+        return scaled
+
+    def build_backgrounds(self):
+        backgrounds = []
+        tile_size = self.region["tile_size"]
+        for entry in self.region.get("backgrounds", []):
+            texture_path = entry.get("texture")
+            if not texture_path:
+                continue
+            start = entry.get("from", [0, 0])
+            size_tiles = entry.get("size", [1, 1])
+            draw_pos = pygame.Vector2(start[0] * tile_size, start[1] * tile_size)
+            draw_size = (int(size_tiles[0] * tile_size), int(size_tiles[1] * tile_size))
+
+            solid_rects = self.scale_rects(entry.get("solid_rects", []), tile_size)
+            world_solids = []
+            for rect in solid_rects:
+                world_solids.append(
+                    pygame.Rect(
+                        int(draw_pos.x + rect[0]),
+                        int(draw_pos.y + rect[1]),
+                        int(rect[2]),
+                        int(rect[3]),
+                    )
+                )
+
+            backgrounds.append(
+                {
+                    "texture": texture_path,
+                    "draw_pos": draw_pos,
+                    "draw_size": draw_size,
+                    "solid_rects": world_solids,
+                }
+            )
+        return backgrounds
 
     def reset_player(self):
         spawn = self.region["player_spawn"]
@@ -155,6 +307,7 @@ class Game:
         if self.state != "play":
             return
         self.update_player(dt)
+        self.update_camera()
 
     def update_player(self, dt):
         speed = self.movement["speed"]
@@ -177,7 +330,7 @@ class Game:
         self.player_is_moving = move.length_squared() > 0
         if self.player_is_moving:
             move = move.normalize() * speed * dt
-            self.player_pos += move
+            self.player_pos = self.resolve_collisions(self.player_pos, move)
             if move.x != 0:
                 self.player_dir = "right" if move.x > 0 else "left"
             else:
@@ -196,6 +349,47 @@ class Game:
         self.player_pos.x = max(0, min(self.player_pos.x, max_x))
         self.player_pos.y = max(0, min(self.player_pos.y, max_y))
 
+    def get_player_rect(self, pos):
+        tile_size = self.region["tile_size"]
+        return pygame.Rect(int(pos.x), int(pos.y), int(tile_size), int(tile_size))
+
+    def get_solid_rects(self):
+        solids = []
+        for block in self.blocks:
+            solids.extend(block.get("solid_rects", []))
+        for background in self.backgrounds:
+            solids.extend(background.get("solid_rects", []))
+        return solids
+
+    def resolve_collisions(self, pos, move):
+        solids = self.get_solid_rects()
+        if not solids:
+            return pos + move
+
+        new_pos = pygame.Vector2(pos)
+
+        new_pos.x += move.x
+        player_rect = self.get_player_rect(new_pos)
+        for solid in solids:
+            if player_rect.colliderect(solid):
+                if move.x > 0:
+                    new_pos.x = solid.left - player_rect.width
+                elif move.x < 0:
+                    new_pos.x = solid.right
+                player_rect = self.get_player_rect(new_pos)
+
+        new_pos.y += move.y
+        player_rect = self.get_player_rect(new_pos)
+        for solid in solids:
+            if player_rect.colliderect(solid):
+                if move.y > 0:
+                    new_pos.y = solid.top - player_rect.height
+                elif move.y < 0:
+                    new_pos.y = solid.bottom
+                player_rect = self.get_player_rect(new_pos)
+
+        return new_pos
+
     def update_menu(self, dt):
         if self.state != "menu":
             return
@@ -204,6 +398,7 @@ class Game:
     def draw_background(self):
         surface = self.render_surface
         surface.fill(self.region["color"])
+        self.draw_background_textures(surface)
         if self.region["rain_enabled"]:
             self.draw_rain(surface)
         if self.region["fog"]["enabled"]:
@@ -211,6 +406,12 @@ class Game:
             fog_surface.fill(self.region["fog"]["color"])
             fog_surface.set_alpha(self.region["fog"]["alpha"])
             surface.blit(fog_surface, (0, 0))
+
+    def draw_background_textures(self, surface):
+        for entry in self.backgrounds:
+            sprite = self.textures.get(entry["texture"], entry["draw_size"])
+            draw_pos = entry["draw_pos"] - self.camera
+            surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
     def draw_menu_background(self):
         surface = self.render_surface
@@ -223,13 +424,17 @@ class Game:
             pygame.draw.rect(self.render_surface, self.region["border_color"], rect, 1)
 
     def get_region_render_rect(self):
-        if self.region.get("cover_screen"):
-            return pygame.Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT)
-        tile_size = self.region["tile_size"]
-        width, height = self.region["size"]
-        region_w = width * tile_size
-        region_h = height * tile_size
-        return pygame.Rect(int(self.region_origin.x), int(self.region_origin.y), region_w, region_h)
+        world_w, world_h = self.get_region_pixel_size()
+        return pygame.Rect(int(-self.camera.x), int(-self.camera.y), world_w, world_h)
+
+    def draw_blocks(self):
+        for block in self.blocks:
+            block_def = block["definition"]
+            texture_path = block_def.get("texture")
+            size = block["sprite_size"]
+            sprite = self.textures.get(texture_path, (int(size[0]), int(size[1])))
+            draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
+            self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
     def draw_player(self):
         character_def = self.get_selected_character()
@@ -245,9 +450,23 @@ class Game:
         frames, fps = self.get_animation_frames(animation, preferred)
         frame_index = int(self.player_anim_time * fps) % len(frames)
         frame = frames[frame_index]
+        frame = self.scale_frame_to_tile(frame)
 
-        draw_pos = self.region_origin + self.player_pos
+        draw_pos = self.player_pos - self.camera
         self.render_surface.blit(frame, draw_pos)
+
+    def scale_frame_to_tile(self, frame):
+        tile_size = int(self.region["tile_size"])
+        target = (tile_size, tile_size)
+        if frame.get_size() == target:
+            return frame
+        cache_key = (id(frame), tile_size)
+        cached = self.frame_cache.get(cache_key)
+        if cached:
+            return cached
+        scaled = pygame.transform.scale(frame, target)
+        self.frame_cache[cache_key] = scaled
+        return scaled
 
     def map_player_direction(self, direction):
         if direction == "up":
@@ -346,6 +565,7 @@ class Game:
         else:
             self.draw_background()
             self.draw_region()
+            self.draw_blocks()
             self.draw_player()
 
         scaled = pygame.transform.scale(self.render_surface, (WINDOW_WIDTH, WINDOW_HEIGHT))

@@ -1,0 +1,9 @@
+﻿{
+  "blocks": [
+    {
+      "id": "small_star_tree",
+      "path": "data/blocks/small_star_tree/block.json"
+    }
+  ]
+}
+
