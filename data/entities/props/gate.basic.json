@@ -1,0 +1,6 @@
+{
+  "id": "gate.basic",
+  "kind": "prop",
+  "texture": "props/gate.png",
+  "size": [16, 6]
+}

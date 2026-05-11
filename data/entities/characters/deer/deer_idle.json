@@ -1,0 +1,14 @@
+{
+  "id": "anim.deer_idle",
+  "kind": "animation",
+  "texture": "characters/Deer/Deer_Idle_with_shadow.png",
+  "grid": { "columns": 4, "rows": 4 },
+  "fps": 4,
+  "index_base": 1,
+  "sequences": {
+    "backward": [5, 6, 7, 8],
+    "left": [9, 10, 11, 12],
+    "right": [13, 14, 15, 16],
+    "forward": [1, 2, 3, 4]
+  }
+}

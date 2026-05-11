@@ -1,0 +1,16 @@
+{
+  "id": "east_norton",
+  "tile_size": 25,
+  "size": [12, 7],
+  "player_spawn": [6, 3],
+  "cover_screen": true,
+  "color": [20, 22, 26],
+  "border_color": [36, 38, 44],
+  "border_enabled": false,
+  "rain_enabled": true,
+  "fog": {
+    "enabled": true,
+    "color": [110, 120, 130],
+    "alpha": 50
+  }
+}

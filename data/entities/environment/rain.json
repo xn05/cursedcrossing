@@ -1,0 +1,12 @@
+{
+	"id": "environment.rain",
+	"kind": "environment",
+	"frequency": 80,
+	"direction_deg": 170,
+	"speed": 300,
+	"particles": [
+		{ "texture": "rain/rain_1.png", "weight": 1 },
+		{ "texture": "rain/rain_2.png", "weight": 1 },
+		{ "texture": "rain/rain_3.png", "weight": 1 }
+	]
+}

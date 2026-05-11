@@ -1,0 +1,7 @@
+{
+  "id": "vehicle.car",
+  "kind": "vehicle",
+  "texture": "vehicles/car.png",
+  "size": [12, 6],
+  "speed": 30
+}

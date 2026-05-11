@@ -1,0 +1,9 @@
+{
+	"speed": 60,
+	"bindings": {
+		"up": ["w", "up"],
+		"down": ["s", "down"],
+		"left": ["a", "left"],
+		"right": ["d", "right"]
+	}
+}

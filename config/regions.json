@@ -1,0 +1,9 @@
+{
+  "default": "east_norton",
+  "regions": [
+    {
+      "id": "east_norton",
+      "path": "data/region/east_norton/region.json"
+    }
+  ]
+}

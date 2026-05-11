@@ -1,0 +1,18 @@
+{
+  "logical_width": 320,
+  "logical_height": 180,
+  "scale": 3,
+  "fps": 60,
+  "fog_alpha": 50,
+  "rain_drops": 40,
+  "colors": {
+    "bg": [10, 12, 16],
+    "track": [40, 42, 48],
+    "road": [24, 24, 28],
+    "fog": [110, 120, 130],
+    "signal_red": [200, 40, 40],
+    "signal_green": [40, 180, 80],
+    "text": [230, 230, 230],
+    "warning": [220, 100, 90]
+  }
+}

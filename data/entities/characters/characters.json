@@ -1,0 +1,49 @@
+{
+	"characters": [
+		{
+			"id": "black_grouse",
+			"display_name": "Black Grouse",
+			"selectable": true,
+			"animations": {
+				"idle": "black_grouse/black_grouse_idle.json",
+				"walk": "black_grouse/black_grouse_walk.json"
+			}
+		},
+        {
+			"id": "boar",
+			"display_name": "Boar",
+			"selectable": true,
+			"animations": {
+				"idle": "boar/boar_idle.json",
+				"walk": "boar/boar_walk.json"
+			}
+		},
+        {
+			"id": "deer",
+			"display_name": "Deer",
+			"selectable": true,
+			"animations": {
+				"idle": "deer/deer_idle.json",
+				"walk": "deer/deer_walk.json"
+			}
+		},
+        {
+			"id": "fox",
+			"display_name": "Fox",
+			"selectable": true,
+			"animations": {
+				"idle": "fox/fox_idle.json",
+				"walk": "fox/fox_walk.json"
+			}
+		},
+        {
+			"id": "hare",
+			"display_name": "Hare",
+			"selectable": true,
+			"animations": {
+				"idle": "hare/hare_idle.json",
+				"walk": "hare/hare_walk.json"
+			}
+		}
+	]
+}

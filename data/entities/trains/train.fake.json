@@ -1,0 +1,8 @@
+{
+  "id": "train.fake",
+  "kind": "train",
+  "texture": "trains/fake.png",
+  "size": [10, 24],
+  "speed": 38,
+  "tags": ["ghost"]
+}

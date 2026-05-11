@@ -1,0 +1,8 @@
+{
+  "id": "train.ghost",
+  "kind": "train",
+  "texture": "trains/ghost.png",
+  "size": [10, 24],
+  "speed": 45,
+  "tags": ["ghost"]
+}

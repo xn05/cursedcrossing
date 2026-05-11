@@ -1,0 +1,8 @@
+{
+  "id": "train.freight",
+  "kind": "train",
+  "texture": "trains/freight.png",
+  "size": [10, 24],
+  "speed": 40,
+  "tags": ["solid"]
+}
