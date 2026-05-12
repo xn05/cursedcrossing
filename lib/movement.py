@@ -31,42 +31,69 @@ def clamp_player_to_region(region, pos):
     return pos
 
 
-def get_player_rect(region, pos):
+def get_player_collider_parts(player_collider):
+    if not player_collider:
+        return None, pygame.Vector2(0, 0)
+    if isinstance(player_collider, dict):
+        return player_collider.get("mask"), pygame.Vector2(player_collider.get("offset", (0, 0)))
+    return player_collider, pygame.Vector2(0, 0)
+
+
+def get_player_rect(region, pos, player_collider=None):
+    player_mask, offset = get_player_collider_parts(player_collider)
+    if player_mask:
+        rect = player_mask.get_rect()
+        rect.topleft = (int(pos.x + offset.x), int(pos.y + offset.y))
+        return rect
     tile_size = region["tile_size"]
-    player_size = int(tile_size * 0.8)
-    return pygame.Rect(int(pos.x), int(pos.y), player_size, player_size)
+    return pygame.Rect(int(pos.x), int(pos.y), tile_size, tile_size)
 
 
-def resolve_collisions(region, pos, move, blocks, player_mask):
+def resolve_collisions(region, pos, move, blocks, player_collider):
     solids = get_solids(blocks)
     if not solids:
         return pos + move
 
     new_pos = pygame.Vector2(pos)
+    player_mask, player_offset = get_player_collider_parts(player_collider)
 
     new_pos.x += move.x
-    player_rect = get_player_rect(region, new_pos)
+    player_rect = get_player_rect(region, new_pos, player_collider)
     collision_x = False
-    for solid_rect, solid_mask, solid_pos in solids:
+    for solid in solids:
+        solid_rect = solid["rect"]
         if player_rect.colliderect(solid_rect):
+            solid_mask = solid.get("mask")
             if player_mask and solid_mask:
-                offset = (int(solid_pos.x - new_pos.x), int(solid_pos.y - new_pos.y))
+                solid_pos = solid["mask_pos"]
+                mask_pos = new_pos + player_offset
+                offset = (int(solid_pos.x - mask_pos.x), int(solid_pos.y - mask_pos.y))
                 if player_mask.overlap(solid_mask, offset):
                     collision_x = True
                     break
+            else:
+                collision_x = True
+                break
     if collision_x:
         new_pos.x = pos.x
 
     new_pos.y += move.y
-    player_rect = get_player_rect(region, new_pos)
+    player_rect = get_player_rect(region, new_pos, player_collider)
     collision_y = False
-    for solid_rect, solid_mask, solid_pos in solids:
+    for solid in solids:
+        solid_rect = solid["rect"]
         if player_rect.colliderect(solid_rect):
+            solid_mask = solid.get("mask")
             if player_mask and solid_mask:
-                offset = (int(solid_pos.x - new_pos.x), int(solid_pos.y - new_pos.y))
+                solid_pos = solid["mask_pos"]
+                mask_pos = new_pos + player_offset
+                offset = (int(solid_pos.x - mask_pos.x), int(solid_pos.y - mask_pos.y))
                 if player_mask.overlap(solid_mask, offset):
                     collision_y = True
                     break
+            else:
+                collision_y = True
+                break
     if collision_y:
         new_pos.y = pos.y
 

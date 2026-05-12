@@ -45,3 +45,32 @@ class RegionTitle:
         sprite.set_alpha(max(0, min(255, alpha)))
         rect = sprite.get_rect(center=(LOGICAL_WIDTH // 2, LOGICAL_HEIGHT // 2))
         surface.blit(sprite, rect)
+
+    def draw_high_res(self, display):
+        if not self.active:
+            return
+        image_path = self.config.get("image")
+        if not image_path:
+            return
+        base_size = self.textures.get_image_size(image_path)
+        if not base_size:
+            return
+
+        scale = max(0.01, float(self.config.get("scale", 1.0)))
+        logical_size = (max(1, int(base_size[0] * scale)), max(1, int(base_size[1] * scale)))
+        sprite = self.textures.get(image_path, base_size)
+
+        duration = max(0.0, float(self.config.get("duration", 0.0)))
+        fade = max(0.0, float(self.config.get("fade_duration", 0.0)))
+        alpha = 255
+        if fade > 0.0 and self.time > duration:
+            remaining = max(0.0, duration + fade - self.time)
+            alpha = int(255 * min(1.0, remaining / fade))
+
+        sprite = sprite.copy()
+        sprite.set_alpha(max(0, min(255, alpha)))
+        logical_pos = (
+            LOGICAL_WIDTH / 2 - logical_size[0] / 2,
+            LOGICAL_HEIGHT / 2 - logical_size[1] / 2,
+        )
+        display.blit_logical(sprite, logical_pos, logical_size, smooth=True)

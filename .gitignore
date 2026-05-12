@@ -21,3 +21,6 @@ lib/__pycache__/settings_menu.cpython-313.pyc
 lib/__pycache__/settings.cpython-313.pyc
 lib/__pycache__/block_numbering.cpython-313.pyc
 __pycache__/main.cpython-313.pyc
+lib/__pycache__/display_manager.cpython-313.pyc
+lib/__pycache__/game_state.cpython-313.pyc
+lib/__pycache__/rain_system.cpython-313.pyc

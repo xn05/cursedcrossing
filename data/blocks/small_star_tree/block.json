@@ -3,9 +3,9 @@
   "name": "Small Star Tree",
   "texture": "blocks/topdownbushes/Assets/Bush_simple1_1.png",
   "size": [1, 1],
-  "origin": [1, 1],
-  "solid_rects": [
-    [0, 0, 1, 1]
-  ],
+  "origin": 1,
+  "brightness": 1.0,
+  "hitbox_type": "pixel",
+  "solid_rects": [1],
   "passable_rects": []
 }

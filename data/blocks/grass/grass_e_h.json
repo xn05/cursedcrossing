@@ -3,9 +3,8 @@
   "name": "Grass Edge Horizontal",
   "texture": "blocks/grass/grass_edge_horizontal.png",
   "size": [1, 1],
-  "origin": [1, 1],
-  "solid_rects": [
-    [0, 0]
-  ],
+  "origin": 1,
+  "brightness": 1.0,
+  "solid_rects": [],
   "passable_rects": []
 }

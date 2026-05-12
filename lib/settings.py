@@ -38,3 +38,9 @@ COLORS = {
     "text": tuple(_colors.get("text", [230, 230, 230])),
     "warning": tuple(_colors.get("warning", [220, 100, 90])),
 }
+
+_hitbox_colors = _SETTINGS.get("hitbox_colors", {})
+HITBOX_COLORS = {
+    "player": tuple(_hitbox_colors.get("player", [80, 220, 255])),
+    "block": tuple(_hitbox_colors.get("block", [255, 80, 80])),
+}

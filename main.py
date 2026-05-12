@@ -1,37 +1,34 @@
 import json
-import math
 import os
-import random
 import sys
 
 import pygame
 
 from lib.animation_loader import load_animation
 from lib.block_loader import load_block_defs
-from lib.block_numbering import block_number_to_coords
+from lib.block_numbering import coords_to_block_number
 from lib.character_loader import load_characters
+from lib.display_manager import DisplayManager
 from lib.entity_loader import load_entity_defs
 from lib.entities import TextureManager
+from lib.game_state import GameStateController
 from lib.region_loader import load_regions, resolve_region_path
 from lib.region_title import RegionTitle
 from lib.pause_overlay import PauseOverlay
 from lib.blocks import build_background_blocks, build_blocks
 from lib.movement import load_movement, update_player
 from lib.character_select import CharacterSelect
+from lib.rain_system import RainSystem
 from lib.settings_menu import SettingsMenu
 from lib.settings import (
     COLORS,
-    FADE_IN_DURATION,
     FOG_ALPHA,
     FPS,
+    HITBOX_COLORS,
     LOGICAL_HEIGHT,
     LOGICAL_WIDTH,
-    RAIN_DROPS,
     SHOW_FPS,
     SHOW_RAIN,
-    WINDOW_HEIGHT,
-    WINDOW_WIDTH,
-    BORDERLESS_FULLSCREEN,
 )
 
 
@@ -39,12 +36,11 @@ class Game:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("Cursed Crossing")
-        # Create a default window; actual mode may be reapplied after loading
-        # settings (e.g. borderless fullscreen).
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        self.display = DisplayManager()
         self.render_surface = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("consolas", 10)
+        self.hud_font_name = "consolas"
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = os.path.join(base_dir, "data", "entities")
@@ -71,8 +67,7 @@ class Game:
         self.settings_menu = SettingsMenu(settings_path)
 
         # Apply display mode according to settings (borderless fullscreen etc.)
-        self.window_size = self.screen.get_size()
-        self.apply_display_mode()
+        self.display.apply_display_mode(self.settings_menu)
 
         regions_path = os.path.join(config_dir, "regions.json")
         regions, default_region = load_regions(regions_path)
@@ -84,13 +79,7 @@ class Game:
         self.region_origin = self.get_region_origin()
         self.region_title = RegionTitle(self.region.get("title", {}), self.textures)
 
-        self.fade_in_duration = max(0.0, float(FADE_IN_DURATION))
-        self.fade_out_duration = self.fade_in_duration
-        self.transition_active = False
-        self.transition_phase = None
-        self.transition_time = 0.0
-        self.transition_midpoint_done = False
-        self.transition_on_midpoint = None
+        self.game_state = GameStateController()
 
         blocks_path = os.path.join(base_dir, "data", "blocks", "blocks.json")
         self.block_defs = load_block_defs(blocks_path, base_dir)
@@ -100,20 +89,8 @@ class Game:
         self.frame_cache = {}
 
         rain_def = self.entity_defs.get("environment.rain", {})
-        self.rain_frequency = rain_def.get("frequency", RAIN_DROPS)
-        self.rain_direction_deg = float(rain_def.get("direction_deg", 200))
-        self.rain_speed = float(rain_def.get("speed", 50))
-        self.rain_textures = self.build_weighted_rain_textures(rain_def.get("particles", []))
-        if not self.rain_textures:
-            self.rain_textures = [
-                "rain/rain_1.png",
-                "rain/rain_2.png",
-                "rain/rain_3.png",
-            ]
-        self.rain_velocity = self.build_rain_velocity(self.rain_direction_deg)
-        self.rain_spawn_backtrack = math.hypot(LOGICAL_WIDTH, LOGICAL_HEIGHT)
-        self.rain_particles = []
-        self.reset_rain_particles()
+        self.title_rain = RainSystem(rain_def)
+        self.region_particle_effects = self.build_region_particle_effects(rain_def)
 
         self.animation_cache = {}
 
@@ -123,10 +100,9 @@ class Game:
         self.player_is_moving = False
         self.player_was_moving = False
         self.player_mask = None
+        self.player_collider_cache = {}
+        self.settings_return_state = "menu"
         self.reset_player()
-
-        self.state = "menu"
-        self.hovered_button = None
 
     @property
     def show_rain(self):
@@ -140,6 +116,30 @@ class Game:
     def developer_options(self):
         return self.settings_menu.developer_options
 
+    @property
+    def show_block_id_overlay(self):
+        return self.settings_menu.developer_options and self.settings_menu.show_block_id_overlay
+
+    @property
+    def show_hitboxes(self):
+        return self.settings_menu.developer_options and self.settings_menu.show_hitboxes
+
+    @property
+    def state(self):
+        return self.game_state.state
+
+    @state.setter
+    def state(self, value):
+        self.game_state.state = value
+
+    @property
+    def hovered_button(self):
+        return self.game_state.hovered_button
+
+    @hovered_button.setter
+    def hovered_button(self, value):
+        self.game_state.hovered_button = value
+
     def reset(self):
         self.reset_player()
         self.update_camera()
@@ -147,86 +147,21 @@ class Game:
         self.state = "play"
         self.hovered_button = None
 
+    def build_region_particle_effects(self, rain_def):
+        effects = []
+        if self.region.get("rain_enabled"):
+            effects.append(RainSystem(rain_def))
+
+        ambient_particles = self.region.get("ambient_particles", [])
+        if isinstance(ambient_particles, dict):
+            ambient_particles = [ambient_particles]
+        for particle_def in ambient_particles:
+            if particle_def and particle_def.get("enabled", True):
+                effects.append(RainSystem(particle_def))
+        return effects
+
     def start_transition(self, on_midpoint):
-        self.transition_active = True
-        self.transition_phase = "out"
-        self.transition_time = 0.0
-        self.transition_midpoint_done = False
-        self.transition_on_midpoint = on_midpoint
-
-    def update_transition(self, dt):
-        if not self.transition_active:
-            return
-        duration = self.fade_out_duration if self.transition_phase == "out" else self.fade_in_duration
-        duration = max(0.0, float(duration))
-        if duration == 0.0:
-            self._advance_transition_phase()
-            return
-        self.transition_time += dt
-        if self.transition_time >= duration:
-            self._advance_transition_phase()
-
-    def _advance_transition_phase(self):
-        if self.transition_phase == "out":
-            if not self.transition_midpoint_done and self.transition_on_midpoint:
-                self.transition_on_midpoint()
-            self.transition_midpoint_done = True
-            self.transition_phase = "in"
-            self.transition_time = 0.0
-        else:
-            self.transition_active = False
-            self.transition_phase = None
-            self.transition_time = 0.0
-            self.transition_on_midpoint = None
-
-    def get_transition_alpha(self):
-        if not self.transition_active or not self.transition_phase:
-            return 0
-        duration = self.fade_out_duration if self.transition_phase == "out" else self.fade_in_duration
-        duration = max(0.0, float(duration))
-        if duration == 0.0:
-            return 0 if self.transition_phase == "in" else 255
-        t = min(1.0, self.transition_time / duration)
-        if self.transition_phase == "out":
-            return int(255 * t)
-        return int(255 * (1.0 - t))
-
-    def draw_transition_overlay(self):
-        alpha = self.get_transition_alpha()
-        if alpha <= 0:
-            return
-        overlay = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(alpha)
-        self.render_surface.blit(overlay, (0, 0))
-
-    def apply_display_mode(self):
-        # Apply window/display mode according to the settings menu value.
-        try:
-            borderless = bool(getattr(self.settings_menu, "borderless_fullscreen", BORDERLESS_FULLSCREEN))
-        except Exception:
-            borderless = BORDERLESS_FULLSCREEN
-        print(f"[DEBUG] apply_display_mode borderless={borderless}")
-        if borderless:
-            info = pygame.display.Info()
-            display_w, display_h = info.current_w, info.current_h
-            # Prefer FULLSCREEN_DESKTOP where available (keeps desktop resolution)
-            flags = None
-            if getattr(pygame, "FULLSCREEN_DESKTOP", None) is not None:
-                flags = pygame.FULLSCREEN_DESKTOP
-            else:
-                flags = pygame.FULLSCREEN | pygame.NOFRAME
-            try:
-                self.screen = pygame.display.set_mode((display_w, display_h), flags)
-            except Exception as e:
-                print(f"[DEBUG] set_mode with flags failed: {e}")
-                self.screen = pygame.display.set_mode((display_w, display_h), pygame.FULLSCREEN)
-            self.window_size = self.screen.get_size()
-            print(f"[DEBUG] new window size: {self.window_size}")
-        else:
-            self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-            self.window_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
-            print(f"[DEBUG] windowed size: {self.window_size}")
+        self.game_state.start_transition(on_midpoint)
 
     def load_region(self, path):
         with open(path, "r", encoding="utf-8") as handle:
@@ -238,6 +173,7 @@ class Game:
             "tile_size": int(data.get("tile_size", 25)),
             "size": data.get("size", [12, 7]),
             "player_spawn": data.get("player_spawn", [1, 1]),
+            "light_level": max(0.0, float(data.get("light_level", data.get("brightness", 1.0)))),
             "cover_screen": bool(data.get("cover_screen", False)),
             "color": data.get("color", [18, 18, 22]),
             "border_color": data.get("border_color", [30, 32, 38]),
@@ -258,6 +194,7 @@ class Game:
             "tiles": data.get("tiles", []),
             "blocks": data.get("blocks", []),
             "background_blocks": data.get("background_blocks", []),
+            "ambient_particles": data.get("ambient_particles", []),
         }
 
     def get_region_origin(self):
@@ -311,10 +248,15 @@ class Game:
         self.player_was_moving = False
 
     def update(self, dt):
-        if self.show_rain and self.region["rain_enabled"]:
-            self.update_rain(dt)
+        if self.state in ("menu", "settings"):
+            if self.show_rain:
+                self.title_rain.update(dt)
+        elif self.state in ("play", "pause"):
+            for particle_system in self.region_particle_effects:
+                particle_system.update(dt)
+
         self.character_select.update(dt)
-        self.update_transition(dt)
+        self.game_state.update_transition(dt)
         if self.state != "play":
             return
         (
@@ -343,13 +285,8 @@ class Game:
         surface = self.render_surface
         surface.fill(self.region["color"])
         self.draw_background_blocks(surface)
-        if self.show_rain and self.region["rain_enabled"]:
-            self.draw_rain(surface)
-        if self.region["fog"]["enabled"]:
-            fog_surface = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
-            fog_surface.fill(self.region["fog"]["color"])
-            fog_surface.set_alpha(self.region["fog"]["alpha"])
-            surface.blit(fog_surface, (0, 0))
+        for particle_system in self.region_particle_effects:
+            particle_system.draw(surface, self.textures)
 
     def draw_background_blocks(self, surface):
         for block in self.background_blocks:
@@ -357,14 +294,15 @@ class Game:
             texture_path = block_def.get("texture")
             size = block["sprite_size"]
             sprite = self.textures.get(texture_path, (int(size[0]), int(size[1])))
+            sprite = self.apply_block_brightness(sprite, block_def)
             draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
             surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
     def draw_menu_background(self):
         surface = self.render_surface
         surface.fill(COLORS["bg"])
-        if self.settings_menu.show_rain and self.region["rain_enabled"]:
-            self.draw_rain(surface)
+        if self.settings_menu.show_rain:
+            self.title_rain.draw(surface, self.textures)
 
     def draw_region(self):
         rect = self.get_region_render_rect()
@@ -381,77 +319,56 @@ class Game:
             texture_path = block_def.get("texture")
             size = block["sprite_size"]
             sprite = self.textures.get(texture_path, (int(size[0]), int(size[1])))
+            sprite = self.apply_block_brightness(sprite, block_def)
             draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
             self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
+    def apply_block_brightness(self, sprite, block_def):
+        brightness = float(block_def.get("brightness", 1.0))
+        if brightness == 1.0:
+            return sprite
+        sprite = sprite.copy()
+        if brightness < 1.0:
+            shade = pygame.Surface(sprite.get_size(), pygame.SRCALPHA)
+            shade.fill((0, 0, 0, max(0, min(255, int(255 * (1.0 - brightness))))))
+            sprite.blit(shade, (0, 0))
+        else:
+            boost = min(255, int(255 * min(1.0, (brightness - 1.0) * 0.5)))
+            sprite.fill((boost, boost, boost, 0), special_flags=pygame.BLEND_RGBA_ADD)
+        return sprite
+
     def draw_block_id_overlay(self):
-        if not self.developer_options:
+        if not self.show_block_id_overlay:
             return
-        
+
         tile_size = int(self.region["tile_size"])
         region_width = int(self.region["size"][0])
         region_height = int(self.region["size"][1])
-        overlay_color = (100, 100, 100)  # Gray
-        text_color = (150, 150, 150)  # Lighter gray
-        
-        # Draw for foreground blocks
-        for i, block in enumerate(self.blocks):
-            draw_pos = block["draw_pos"] - self.camera
-            block_size = block["block_size"]
-            
-            # Draw outline rectangle
-            outline_rect = pygame.Rect(int(draw_pos.x), int(draw_pos.y), int(block_size), int(block_size))
-            pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
-            
-            # Calculate block number from draw position
-            # Draw position is in pixels, convert to tile coordinates
-            world_x = draw_pos.x + self.camera.x
-            world_y = draw_pos.y + self.camera.y
-            tile_x = int(world_x / tile_size)
-            tile_y = int(world_y / tile_size)
-            
-            # Ensure tile coordinates are within bounds
-            if 0 <= tile_x < region_width and 0 <= tile_y < region_height:
-                # Calculate block number
-                row_from_bottom = region_height - 1 - tile_y
-                block_number = row_from_bottom * region_width + tile_x + 1
-                
-                # Draw block number in the center
-                block_num_text = str(block_number)
-                num_surface = self.menu_font.render(block_num_text, False, text_color)
-                text_x = int(draw_pos.x + (block_size - num_surface.get_width()) / 2)
-                text_y = int(draw_pos.y + (block_size - num_surface.get_height()) / 2)
-                self.render_surface.blit(num_surface, (text_x, text_y))
-        
-        # Draw for background blocks
-        for i, block in enumerate(self.background_blocks):
-            draw_pos = block["draw_pos"] - self.camera
-            block_size = block["block_size"]
-            
-            # Draw outline rectangle
-            outline_rect = pygame.Rect(int(draw_pos.x), int(draw_pos.y), int(block_size), int(block_size))
-            pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
-            
-            # Calculate block number from draw position
-            world_x = draw_pos.x + self.camera.x
-            world_y = draw_pos.y + self.camera.y
-            tile_x = int(world_x / tile_size)
-            tile_y = int(world_y / tile_size)
-            
-            # Ensure tile coordinates are within bounds
-            if 0 <= tile_x < region_width and 0 <= tile_y < region_height:
-                # Calculate block number
-                row_from_bottom = region_height - 1 - tile_y
-                block_number = row_from_bottom * region_width + tile_x + 1
-                
-                # Draw block number in the center
-                block_num_text = str(block_number)
-                num_surface = self.menu_font.render(block_num_text, False, text_color)
-                text_x = int(draw_pos.x + (block_size - num_surface.get_width()) / 2)
-                text_y = int(draw_pos.y + (block_size - num_surface.get_height()) / 2)
-                self.render_surface.blit(num_surface, (text_x, text_y))
+        overlay_color = (100, 100, 100)
+
+        for tile_y in range(region_height):
+            for tile_x in range(region_width):
+                draw_x = tile_x * tile_size - self.camera.x
+                draw_y = tile_y * tile_size - self.camera.y
+                outline_rect = pygame.Rect(int(draw_x), int(draw_y), tile_size, tile_size)
+                pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
 
     def draw_player(self):
+        frame, draw_pos = self.get_player_frame_and_pos()
+        if not frame:
+            return
+        self.render_surface.blit(frame, (int(draw_pos.x), int(draw_pos.y)))
+
+    def get_player_frame_and_pos(self):
+        raw_frame, render_scale = self.get_player_source_frame()
+        if not raw_frame:
+            return None, None
+        frame = self.scale_frame_to_tile(raw_frame, render_scale)
+        self.player_mask = self.get_player_collision_mask()
+        draw_pos = self.get_player_draw_pos(frame)
+        return frame, draw_pos
+
+    def get_player_source_frame(self):
         character_def = self.character_select.get_selected_character()
         anim_key = "walk" if self.player_is_moving else "idle"
         anim_id = None
@@ -459,7 +376,7 @@ class Game:
             anim_id = character_def.get(anim_key) or character_def.get("idle") or character_def.get("walk")
         animation = self.get_animation(anim_id)
         if not animation:
-            return
+            return None, 1.0
         direction = self.map_player_direction(self.player_dir)
         frames, fps = self.get_animation_frames(animation, direction)
         frame_index = int(self.player_anim_time * fps) % len(frames)
@@ -467,17 +384,139 @@ class Game:
         render_scale = 1.0
         if character_def:
             render_scale = float(character_def.get("scale", 1.0))
-        frame = self.scale_frame_to_tile(frame, render_scale)
-        self.player_mask = pygame.mask.from_surface(frame)
-        draw_pos = self.get_player_draw_pos(frame)
-        self.render_surface.blit(frame, (int(draw_pos.x), int(draw_pos.y)))
+        return frame, render_scale
 
-    def get_player_draw_pos(self, frame):
+    def draw_player_high_res(self):
+        raw_frame, render_scale = self.get_player_source_frame()
+        if not raw_frame:
+            return
+        logical_size = self.get_player_logical_size(raw_frame, render_scale)
+        self.player_mask = self.get_player_collision_mask()
+        draw_pos = self.get_player_draw_pos_from_size(logical_size)
+        self.display.blit_logical(raw_frame, draw_pos, logical_size, smooth=False)
+
+    def get_player_collision_mask(self):
+        character_def = self.character_select.get_selected_character()
+        if not character_def:
+            return None
+        render_scale = float(character_def.get("scale", 1.0))
+        cache_key = (
+            character_def.get("id"),
+            int(self.region["tile_size"]),
+            render_scale,
+            character_def.get("idle"),
+            character_def.get("walk"),
+        )
+        cached = self.player_collider_cache.get(cache_key)
+        if cached:
+            return cached
+
+        sample_rects = []
+        for anim_key in ("idle", "walk"):
+            anim_id = character_def.get(anim_key)
+            animation = self.get_animation(anim_id)
+            if not animation:
+                continue
+            for frames in animation["sequences"].values():
+                for frame in frames:
+                    scaled_frame = self.scale_frame_to_tile(frame, render_scale)
+                    rect = self.get_player_frame_footprint_rect(scaled_frame)
+                    if rect:
+                        sample_rects.append(rect)
+
+        if sample_rects:
+            collider = self.create_stable_player_collider(sample_rects)
+        else:
+            raw_frame, render_scale = self.get_player_source_frame()
+            frame = self.scale_frame_to_tile(raw_frame, render_scale) if raw_frame else None
+            collider = self.create_player_collision_mask(frame) if frame else None
+        self.player_collider_cache[cache_key] = collider
+        return collider
+
+    def get_player_frame_footprint_rect(self, frame):
+        if not frame:
+            return None
         tile_size = int(self.region["tile_size"])
         frame_w, frame_h = frame.get_size()
+        offset_x = int((tile_size - frame_w) / 2)
+        offset_y = int(tile_size - frame_h)
+        frame_mask = pygame.mask.from_surface(frame)
+        visible_rects = frame_mask.get_bounding_rects()
+        if visible_rects:
+            visible_rect = visible_rects[0].unionall(visible_rects[1:])
+        else:
+            visible_rect = pygame.Rect(0, 0, frame_w, frame_h)
+
+        hitbox_top = visible_rect.y + visible_rect.height // 2
+        return pygame.Rect(
+            offset_x + visible_rect.x,
+            offset_y + hitbox_top,
+            visible_rect.width,
+            max(1, visible_rect.bottom - hitbox_top),
+        )
+
+    def create_stable_player_collider(self, sample_rects):
+        tile_size = int(self.region["tile_size"])
+        width = max(1, min(rect.width for rect in sample_rects))
+        height = max(1, self.get_middle_value(rect.height for rect in sample_rects))
+        bottom = max(rect.bottom for rect in sample_rects)
+        center_x = tile_size // 2
+        left = int(round(center_x - width / 2))
+        top = int(round(bottom - height))
+        mask = pygame.Mask((width, height), fill=True)
+        return {"mask": mask, "offset": pygame.Vector2(left, top)}
+
+    def get_middle_value(self, values):
+        values = sorted(int(value) for value in values)
+        return values[len(values) // 2]
+
+    def create_player_collision_mask(self, frame):
+        hitbox_rect = self.get_player_frame_footprint_rect(frame)
+        if not hitbox_rect:
+            return None
+        mask = pygame.Mask(hitbox_rect.size, fill=True)
+        return {
+            "mask": mask,
+            "offset": pygame.Vector2(hitbox_rect.x, hitbox_rect.y),
+        }
+
+    def get_player_collision_rect(self):
+        if not self.player_mask:
+            return None
+        if isinstance(self.player_mask, dict):
+            mask = self.player_mask.get("mask")
+            offset = pygame.Vector2(self.player_mask.get("offset", (0, 0)))
+        else:
+            mask = self.player_mask
+            offset = pygame.Vector2(0, 0)
+        if not mask:
+            return None
+        rect = mask.get_rect()
+        rect.topleft = (
+            int(self.player_pos.x + offset.x - self.camera.x),
+            int(self.player_pos.y + offset.y - self.camera.y),
+        )
+        return rect
+
+    def get_player_draw_pos(self, frame):
+        return self.get_player_draw_pos_from_size(frame.get_size())
+
+    def get_player_draw_pos_from_size(self, size):
+        tile_size = int(self.region["tile_size"])
+        frame_w, frame_h = size
         offset_x = (tile_size - frame_w) / 2
         offset_y = tile_size - frame_h
         return self.player_pos + pygame.Vector2(offset_x, offset_y) - self.camera
+
+    def get_player_logical_size(self, frame, render_scale=1.0):
+        tile_size = int(self.region["tile_size"])
+        frame_w, frame_h = frame.get_size()
+        if frame_w <= 0 or frame_h <= 0:
+            return frame.get_size()
+        target_h = max(1, int(tile_size * max(0.1, render_scale)))
+        scale = target_h / frame_h
+        target_w = max(1, int(round(frame_w * scale)))
+        return target_w, target_h
 
     def scale_frame_to_tile(self, frame, render_scale=1.0):
         tile_size = int(self.region["tile_size"])
@@ -505,90 +544,12 @@ class Game:
             return "forward"
         return direction
 
-    def draw_rain(self, surface):
-        for particle in self.rain_particles:
-            sprite = self.textures.get(particle["texture"], (2, 4))
-            surface.blit(sprite, particle["pos"])
-
-    def build_weighted_rain_textures(self, particles):
-        textures = []
-        for particle in particles:
-            texture = particle.get("texture")
-            weight = int(particle.get("weight", 1))
-            if not texture or weight <= 0:
-                continue
-            textures.extend([texture] * weight)
-        return textures
-
-    def build_rain_velocity(self, direction_deg):
-        radians = math.radians(direction_deg)
-        vec = pygame.Vector2(math.sin(radians), -math.cos(radians))
-        if vec.length_squared() == 0:
-            return pygame.Vector2(0, 1)
-        return vec.normalize()
-
-    def reset_rain_particles(self):
-        self.rain_particles = []
-        count = int(self.rain_frequency)
-        for _ in range(count):
-            particle = self.spawn_rain_particle()
-            self.rain_particles.append(particle)
-
-    def spawn_rain_particle(self):
-        x, y = self.get_rain_spawn_pos()
-        backtrack = random.uniform(0, self.rain_spawn_backtrack)
-        x -= self.rain_velocity.x * backtrack
-        y -= self.rain_velocity.y * backtrack
-        texture_path = random.choice(self.rain_textures)
-        return {"pos": pygame.Vector2(x, y), "texture": texture_path}
-
-    def get_rain_spawn_pos(self):
-        margin = 8
-        vx = self.rain_velocity.x
-        vy = self.rain_velocity.y
-
-        edges = []
-        weights = []
-        if vx > 0.01:
-            edges.append("left")
-            weights.append(abs(vx))
-        elif vx < -0.01:
-            edges.append("right")
-            weights.append(abs(vx))
-
-        if vy > 0.01:
-            edges.append("top")
-            weights.append(abs(vy))
-        elif vy < -0.01:
-            edges.append("bottom")
-            weights.append(abs(vy))
-
-        if not edges:
-            return random.uniform(0, LOGICAL_WIDTH), -margin
-
-        edge = random.choices(edges, weights=weights, k=1)[0]
-        if edge == "left":
-            return -margin, random.uniform(0, LOGICAL_HEIGHT)
-        if edge == "right":
-            return LOGICAL_WIDTH + margin, random.uniform(0, LOGICAL_HEIGHT)
-        if edge == "bottom":
-            return random.uniform(0, LOGICAL_WIDTH), LOGICAL_HEIGHT + margin
-        return random.uniform(0, LOGICAL_WIDTH), -margin
-
-    def update_rain(self, dt):
-        velocity = self.rain_velocity * self.rain_speed * dt
-        for particle in self.rain_particles:
-            particle["pos"] += velocity
-            if (
-                particle["pos"].y > LOGICAL_HEIGHT + 20
-                or particle["pos"].x < -20
-                or particle["pos"].x > LOGICAL_WIDTH + 20
-            ):
-                respawn = self.spawn_rain_particle()
-                particle["pos"] = respawn["pos"]
-                particle["texture"] = respawn["texture"]
-
     def draw(self):
+        draw_high_res_player = False
+        draw_high_res_title = False
+        draw_high_res_dev_overlay = False
+        draw_high_res_hitboxes = False
+        draw_high_res_pause = False
         if self.state == "menu":
             self.draw_menu_background()
             self.draw_menu()
@@ -599,30 +560,124 @@ class Game:
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
-            self.draw_block_id_overlay()
-            self.draw_player()
-            self.pause_overlay.draw(self.render_surface, self.hovered_button)
+            draw_high_res_player = True
+            draw_high_res_dev_overlay = self.show_block_id_overlay
+            draw_high_res_hitboxes = self.show_hitboxes
+            draw_high_res_pause = True
         else:
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
-            self.draw_block_id_overlay()
-            self.draw_player()
-            self.region_title.draw(self.render_surface)
+            draw_high_res_player = True
+            draw_high_res_title = True
+            draw_high_res_dev_overlay = self.show_block_id_overlay
+            draw_high_res_hitboxes = self.show_hitboxes
 
+        self.display.present_base(self.render_surface)
+
+        if draw_high_res_player:
+            self.draw_player_high_res()
+        if self.state in ("play", "pause"):
+            self.draw_region_effects_high_res()
+        if draw_high_res_dev_overlay:
+            self.draw_block_id_overlay_high_res()
+        if draw_high_res_hitboxes:
+            self.draw_hitboxes_high_res()
+        if draw_high_res_title:
+            self.region_title.draw_high_res(self.display)
+        if draw_high_res_pause:
+            self.pause_overlay.draw_high_res(self.display, self.hovered_button)
         if self.show_fps:
-            self.draw_fps()
+            self.draw_fps_high_res()
 
-        self.draw_transition_overlay()
-        # Scale render surface to current window size
-        scaled = pygame.transform.scale(self.render_surface, self.window_size)
-        self.screen.blit(scaled, (0, 0))
-        pygame.display.flip()
+        self.draw_transition_overlay_high_res()
+
+        self.display.flip()
 
     def draw_fps(self):
         fps_text = f"FPS {self.clock.get_fps():.0f}"
         fps_surface = self.font.render(fps_text, False, COLORS["text"])
         self.render_surface.blit(fps_surface, (4, 4))
+
+    def draw_fps_high_res(self):
+        font_size = max(12, int(10 * self.display.scale))
+        font = pygame.font.SysFont(self.hud_font_name, font_size)
+        fps_text = f"FPS {self.clock.get_fps():.0f}"
+        fps_surface = font.render(fps_text, True, COLORS["text"])
+        self.display.screen.blit(fps_surface, self.display.logical_to_screen_pos((4, 4)))
+
+    def draw_block_id_overlay_high_res(self):
+        tile_size = int(self.region["tile_size"])
+        region_width = int(self.region["size"][0])
+        region_height = int(self.region["size"][1])
+        overlay_color = (110, 110, 110)
+        text_color = (235, 235, 235)
+        font_size = max(12, int(8 * self.display.scale))
+        font = pygame.font.SysFont(self.hud_font_name, font_size)
+
+        for tile_y in range(region_height):
+            for tile_x in range(region_width):
+                block_number = coords_to_block_number(tile_x, tile_y, region_width, region_height)
+                logical_rect = pygame.Rect(
+                    int(tile_x * tile_size - self.camera.x),
+                    int(tile_y * tile_size - self.camera.y),
+                    tile_size,
+                    tile_size,
+                )
+                screen_rect = self.display.logical_to_screen_rect(logical_rect)
+                pygame.draw.rect(self.display.screen, overlay_color, screen_rect, 1)
+
+                number_surface = font.render(str(block_number), True, text_color)
+                number_rect = number_surface.get_rect(center=screen_rect.center)
+                self.display.screen.blit(number_surface, number_rect)
+
+    def draw_hitboxes_high_res(self):
+        block_color = HITBOX_COLORS["block"]
+        player_color = HITBOX_COLORS["player"]
+
+        for block in self.blocks:
+            for rect in block.get("debug_hitboxes", []):
+                debug_rect = pygame.Rect(
+                    int(rect.x - self.camera.x),
+                    int(rect.y - self.camera.y),
+                    rect.width,
+                    rect.height,
+                )
+                pygame.draw.rect(self.display.screen, block_color, self.display.logical_to_screen_rect(debug_rect), 2)
+
+        if self.player_mask:
+            player_rect = self.get_player_collision_rect()
+            if player_rect:
+                pygame.draw.rect(self.display.screen, player_color, self.display.logical_to_screen_rect(player_rect), 2)
+
+    def draw_region_effects_high_res(self):
+        light_level = float(self.region.get("light_level", 1.0))
+        if light_level < 1.0:
+            darkness = pygame.Surface(self.display.window_size)
+            darkness.fill((0, 0, 0))
+            darkness.set_alpha(max(0, min(255, int(255 * (1.0 - light_level)))))
+            self.display.screen.blit(darkness, (0, 0))
+        elif light_level > 1.0:
+            brightness = pygame.Surface(self.display.window_size)
+            brightness.fill((255, 255, 255))
+            alpha = int(255 * min(1.0, (light_level - 1.0) * 0.5))
+            brightness.set_alpha(max(0, min(255, alpha)))
+            self.display.screen.blit(brightness, (0, 0))
+
+        if self.region["fog"]["enabled"]:
+            fog_surface = pygame.Surface(self.display.window_size)
+            fog_surface.fill(self.region["fog"]["color"])
+            fog_surface.set_alpha(self.region["fog"]["alpha"])
+            self.display.screen.blit(fog_surface, (0, 0))
+
+    def draw_transition_overlay_high_res(self):
+        alpha = self.game_state.get_transition_alpha()
+        if alpha <= 0:
+            return
+        overlay = pygame.Surface(self.display.window_size)
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(alpha)
+        self.display.screen.blit(overlay, (0, 0))
 
     def handle_input(self, event):
         if self.state == "menu":
@@ -698,6 +753,7 @@ class Game:
             if buttons["start"].collidepoint(pos):
                 self.start_transition(self.reset)
             elif buttons["settings"].collidepoint(pos):
+                self.settings_return_state = "menu"
                 self.state = "settings"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
             self.start_transition(self.reset)
@@ -719,6 +775,9 @@ class Game:
             pos = self.scale_mouse_pos(event.pos)
             if buttons["resume"].collidepoint(pos):
                 self.state = "play"
+            elif buttons["settings"].collidepoint(pos):
+                self.settings_return_state = "pause"
+                self.state = "settings"
             elif buttons["title"].collidepoint(pos):
                 self.state = "menu"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
@@ -735,34 +794,36 @@ class Game:
             scaled_event = pygame.event.Event(pygame.MOUSEMOTION, {"pos": pos})
             new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
             if new_state != "settings":
-                self.state = new_state
+                self.state = self.resolve_settings_return_state(new_state)
                 # Apply display changes (e.g. borderless) when leaving settings
-                self.apply_display_mode()
+                self.display.apply_display_mode(self.settings_menu)
         elif event.type == pygame.MOUSEBUTTONDOWN:
             pos = self.scale_mouse_pos(event.pos)
             scaled_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": event.button})
             new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
             if new_state != "settings":
-                self.state = new_state
+                self.state = self.resolve_settings_return_state(new_state)
                 # Apply display changes (e.g. borderless) when leaving settings
-                self.apply_display_mode()
-                if new_state == "menu" and self.settings_menu.show_rain:
-                    self.reset_rain_particles()
+                self.display.apply_display_mode(self.settings_menu)
+                if self.state == "menu" and self.settings_menu.show_rain:
+                    self.title_rain.reset()
         else:
             new_state = self.settings_menu.handle_input(event, self.menu_font)
             if new_state != "settings":
-                self.state = new_state
+                self.state = self.resolve_settings_return_state(new_state)
                 # Apply display changes (e.g. borderless) when leaving settings
-                self.apply_display_mode()
+                self.display.apply_display_mode(self.settings_menu)
 
     def draw_settings_menu(self):
         self.settings_menu.draw(self.render_surface, self.menu_font)
 
+    def resolve_settings_return_state(self, new_state):
+        if new_state == "menu":
+            return self.settings_return_state
+        return new_state
+
     def scale_mouse_pos(self, pos):
-        window_w, window_h = self.window_size
-        x = int(pos[0] * LOGICAL_WIDTH / window_w)
-        y = int(pos[1] * LOGICAL_HEIGHT / window_h)
-        return x, y
+        return self.display.scale_mouse_pos(pos)
 
     def _build_character_list(self, characters):
         characters = list(characters)

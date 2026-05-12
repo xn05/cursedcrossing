@@ -15,6 +15,10 @@
     {
       "id": "grass_edge_horizontal",
       "path": "data/blocks/grass/grass_e_h.json"
+    },
+    {
+      "id": "bush1",
+      "path": "data/blocks/grass/bush1.json"
     }
   ]
 }
