@@ -1,0 +1,14 @@
+﻿{
+  "id": "anim.albo_walk",
+  "kind": "animation",
+  "texture": "characters/Albo/albo.png",
+  "grid": { "columns": 12, "rows": 8 },
+  "fps": 8,
+  "index_base": 1,
+  "sequences": {
+    "backward": [37, 38, 39],
+    "left": [25, 26, 27],
+    "right": [13, 14, 15],
+    "forward": [1, 2, 3]
+  }
+}

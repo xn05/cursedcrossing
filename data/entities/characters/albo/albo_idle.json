@@ -1,0 +1,14 @@
+﻿{
+  "id": "anim.albo_idle",
+  "kind": "animation",
+  "texture": "characters/Albo/albo.png",
+  "grid": { "columns": 12, "rows": 8 },
+  "fps": 4,
+  "index_base": 1,
+  "sequences": {
+    "backward": [38, 38, 38, 38, 38, 38, 40],
+    "left": [26, 26, 26, 26, 26, 26, 28],
+    "right": [14, 14, 14, 14, 14, 14, 16],
+    "forward": [2, 2, 2, 2, 2, 2, 4]
+  }
+}

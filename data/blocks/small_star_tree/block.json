@@ -5,7 +5,7 @@
   "size": [1, 1],
   "origin": [1, 1],
   "solid_rects": [
-    [0, 0, 1, 1]
+    [0, 0]
   ],
   "passable_rects": []
 }

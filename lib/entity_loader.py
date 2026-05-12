@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 
 
@@ -9,10 +9,11 @@ def load_entity_defs(root_dir):
             if not name.endswith(".json"):
                 continue
             file_path = os.path.join(dirpath, name)
-            with open(file_path, "r", encoding="utf-8") as handle:
+            with open(file_path, "r", encoding="utf-8-sig") as handle:
                 data = json.load(handle)
             entity_id = data.get("id")
             if not entity_id:
                 continue
             entity_defs[entity_id] = data
     return entity_defs
+

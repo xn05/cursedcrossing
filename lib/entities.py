@@ -1,4 +1,4 @@
-import math
+﻿import math
 
 import pygame
 
@@ -118,3 +118,4 @@ class Signal(Entity):
 
     def toggle(self):
         self.is_red = not self.is_red
+

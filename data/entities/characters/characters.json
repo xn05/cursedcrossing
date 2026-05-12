@@ -1,6 +1,16 @@
 {
 	"characters": [
 		{
+			"id": "albo",
+			"display_name": "Albanese",
+			"selectable": true,
+			"scale": 1.6,
+			"animations": {
+				"idle": "albo/albo_idle.json",
+				"walk": "albo/albo_walk.json"
+			}
+		},
+		{
 			"id": "black_grouse",
 			"display_name": "Black Grouse",
 			"selectable": true,

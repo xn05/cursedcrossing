@@ -71,3 +71,4 @@ def normalize_origin(origin, size):
     origin[1] = max(0, min(origin[1], size[1] - 1))
     return origin
 
+

@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 
 
@@ -15,3 +15,4 @@ def resolve_region_path(base_dir, regions, region_id):
 		raise ValueError(f"Unknown region id: {region_id}")
 	path = regions[region_id]
 	return os.path.join(base_dir, path)
+

@@ -6,19 +6,28 @@ import sys
 
 import pygame
 
-from animation_loader import load_animation
-from block_loader import load_block_defs
-from character_loader import load_characters
-from entity_loader import load_entity_defs
-from entities import TextureManager
-from region_loader import load_regions, resolve_region_path
-from settings import (
+from lib.animation_loader import load_animation
+from lib.block_loader import load_block_defs
+from lib.character_loader import load_characters
+from lib.entity_loader import load_entity_defs
+from lib.entities import TextureManager
+from lib.region_loader import load_regions, resolve_region_path
+from lib.region_title import RegionTitle
+from lib.pause_overlay import PauseOverlay
+from lib.blocks import build_background_blocks, build_blocks
+from lib.movement import load_movement, update_player
+from lib.character_select import CharacterSelect
+from lib.settings_menu import SettingsMenu
+from lib.settings import (
     COLORS,
+    FADE_IN_DURATION,
     FOG_ALPHA,
     FPS,
     LOGICAL_HEIGHT,
     LOGICAL_WIDTH,
     RAIN_DROPS,
+    SHOW_FPS,
+    SHOW_RAIN,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
@@ -35,15 +44,28 @@ class Game:
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = os.path.join(base_dir, "data", "entities")
-        gameplay_dir = os.path.join(base_dir, "data", "gameplay")
+        gameplay_dir = os.path.join(base_dir, "data", "gameplay", "config")
         config_dir = os.path.join(base_dir, "config")
         textures_dir = os.path.join(base_dir, "assets", "textures")
         font_path = os.path.join(base_dir, "assets", "font", "main.ttf")
+        settings_path = os.path.join(config_dir, "settings.json")
 
         self.menu_font = pygame.font.Font(font_path, 6)
+        self.pause_overlay = PauseOverlay(self.menu_font)
         self.entity_defs = load_entity_defs(data_dir)
         self.textures = TextureManager(textures_dir)
-        self.movement = self.load_movement(os.path.join(gameplay_dir, "keybinds.json"))
+        keybinds_path = os.path.join(config_dir, "keybinds.json")
+        if not os.path.exists(keybinds_path):
+            keybinds_path = os.path.join(gameplay_dir, "keybinds.json")
+        self.movement = load_movement(keybinds_path)
+
+        # Character selection and settings menus
+        characters_path = os.path.join(data_dir, "characters", "characters.json")
+        characters, character_animations = load_characters(characters_path, data_dir)
+        characters = self._build_character_list(characters)
+        self.character_select = CharacterSelect(characters, character_animations, self.textures)
+        self.settings_menu = SettingsMenu(settings_path)
+
         regions_path = os.path.join(config_dir, "regions.json")
         regions, default_region = load_regions(regions_path)
         region_id = default_region or next(iter(regions.keys()), None)
@@ -52,11 +74,20 @@ class Game:
         region_path = resolve_region_path(base_dir, regions, region_id)
         self.region = self.load_region(region_path)
         self.region_origin = self.get_region_origin()
+        self.region_title = RegionTitle(self.region.get("title", {}), self.textures)
+
+        self.fade_in_duration = max(0.0, float(FADE_IN_DURATION))
+        self.fade_out_duration = self.fade_in_duration
+        self.transition_active = False
+        self.transition_phase = None
+        self.transition_time = 0.0
+        self.transition_midpoint_done = False
+        self.transition_on_midpoint = None
 
         blocks_path = os.path.join(base_dir, "data", "blocks", "blocks.json")
         self.block_defs = load_block_defs(blocks_path, base_dir)
-        self.blocks = self.build_blocks()
-        self.background_blocks = self.build_background_blocks()
+        self.blocks = build_blocks(self.region, self.block_defs, self.textures)
+        self.background_blocks = build_background_blocks(self.region, self.block_defs, self.textures)
         self.camera = pygame.Vector2(0, 0)
         self.frame_cache = {}
 
@@ -77,11 +108,6 @@ class Game:
         self.reset_rain_particles()
 
         self.animation_cache = {}
-        self.menu_anim_time = 0.0
-        characters_path = os.path.join(data_dir, "characters", "characters.json")
-        self.characters, self.character_animations = load_characters(characters_path, data_dir)
-        self.characters = self.build_character_list(self.characters)
-        self.selected_character_index = 0
 
         self.player_pos = pygame.Vector2(0, 0)
         self.player_dir = "down"
@@ -93,34 +119,80 @@ class Game:
 
         self.state = "menu"
         self.hovered_button = None
-        self.hovered_arrow = None
+
+    @property
+    def show_rain(self):
+        return self.settings_menu.show_rain
+
+    @property
+    def show_fps(self):
+        return self.settings_menu.show_fps
 
     def reset(self):
         self.reset_player()
         self.update_camera()
+        self.region_title.reset()
         self.state = "play"
         self.hovered_button = None
-        self.hovered_arrow = None
 
-    def load_movement(self, path):
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        speed = float(data.get("speed", 60))
-        bindings = {}
-        for direction, keys in data.get("bindings", {}).items():
-            key_codes = []
-            for key in keys:
-                try:
-                    key_codes.append(pygame.key.key_code(key))
-                except ValueError:
-                    continue
-            bindings[direction] = set(key_codes)
-        return {"speed": speed, "bindings": bindings}
+    def start_transition(self, on_midpoint):
+        self.transition_active = True
+        self.transition_phase = "out"
+        self.transition_time = 0.0
+        self.transition_midpoint_done = False
+        self.transition_on_midpoint = on_midpoint
+
+    def update_transition(self, dt):
+        if not self.transition_active:
+            return
+        duration = self.fade_out_duration if self.transition_phase == "out" else self.fade_in_duration
+        duration = max(0.0, float(duration))
+        if duration == 0.0:
+            self._advance_transition_phase()
+            return
+        self.transition_time += dt
+        if self.transition_time >= duration:
+            self._advance_transition_phase()
+
+    def _advance_transition_phase(self):
+        if self.transition_phase == "out":
+            if not self.transition_midpoint_done and self.transition_on_midpoint:
+                self.transition_on_midpoint()
+            self.transition_midpoint_done = True
+            self.transition_phase = "in"
+            self.transition_time = 0.0
+        else:
+            self.transition_active = False
+            self.transition_phase = None
+            self.transition_time = 0.0
+            self.transition_on_midpoint = None
+
+    def get_transition_alpha(self):
+        if not self.transition_active or not self.transition_phase:
+            return 0
+        duration = self.fade_out_duration if self.transition_phase == "out" else self.fade_in_duration
+        duration = max(0.0, float(duration))
+        if duration == 0.0:
+            return 0 if self.transition_phase == "in" else 255
+        t = min(1.0, self.transition_time / duration)
+        if self.transition_phase == "out":
+            return int(255 * t)
+        return int(255 * (1.0 - t))
+
+    def draw_transition_overlay(self):
+        alpha = self.get_transition_alpha()
+        if alpha <= 0:
+            return
+        overlay = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(alpha)
+        self.render_surface.blit(overlay, (0, 0))
 
     def load_region(self, path):
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
         fog = data.get("fog", {})
+        title = data.get("title", {})
         return {
             "id": data.get("id", "region"),
             "tile_size": int(data.get("tile_size", 25)),
@@ -135,6 +207,13 @@ class Game:
                 "enabled": bool(fog.get("enabled", True)),
                 "color": fog.get("color", COLORS["fog"]),
                 "alpha": int(fog.get("alpha", FOG_ALPHA)),
+            },
+            "title": {
+                "enabled": bool(title.get("enabled", False)),
+                "image": title.get("image"),
+                "scale": float(title.get("scale", 1.0)),
+                "duration": float(title.get("duration", 2.0)),
+                "fade_duration": float(title.get("fade_duration", 1.0)),
             },
             "tiles": data.get("tiles", []),
             "blocks": data.get("blocks", []),
@@ -182,155 +261,6 @@ class Game:
     def update_camera(self):
         self.camera = self.get_camera_offset()
 
-    def build_blocks(self):
-        blocks = []
-        tile_size = self.region["tile_size"]
-        for placement in self.region.get("blocks", []):
-            block_id = placement.get("id")
-            if not block_id:
-                continue
-            block_def = self.block_defs.get(block_id)
-            if not block_def:
-                continue
-            pos = placement.get("pos", [0, 0])
-            # Handle both single position [x, y] and multiple positions [[x1,y1], [x2,y2]]
-            if isinstance(pos[0], list):
-                positions = pos
-            else:
-                positions = [pos]
-            for position in positions:
-                anchor = pygame.Vector2(position[0] * tile_size, position[1] * tile_size)
-                origin_tiles = pygame.Vector2(block_def.get("origin", [0, 0]))
-                size_tiles = block_def.get("size", [1, 1])
-                origin = origin_tiles * tile_size
-                block_size = (int(size_tiles[0] * tile_size), int(size_tiles[1] * tile_size))
-                sprite_size, sprite_offset = self.get_block_sprite_layout(block_def, block_size)
-                texture_path = block_def.get("texture")
-                sprite = self.textures.get(texture_path, (int(sprite_size[0]), int(sprite_size[1])))
-                mask = pygame.mask.from_surface(sprite)
-                hitbox = mask.get_rect()
-                block_size = max(hitbox.width, hitbox.height)
-                solid_rects = self.scale_rects(block_def.get("solid_rects", []), tile_size)
-                passable_rects = self.scale_rects(block_def.get("passable_rects", []), tile_size)
-
-                draw_pos = anchor - origin
-                world_solids = []
-                for rect in solid_rects:
-                    world_solids.append(
-                        pygame.Rect(
-                            int(draw_pos.x + rect[0]),
-                            int(draw_pos.y + rect[1]),
-                            int(rect[2]),
-                            int(rect[3]),
-                        )
-                    )
-                blocks.append(
-                    {
-                        "definition": block_def,
-                        "draw_pos": draw_pos,
-                        "block_size": block_size,
-                        "sprite_size": sprite_size,
-                        "sprite_offset": sprite_offset,
-                        "mask": mask,
-                        "solid_rects": world_solids,
-                        "passable_rects": passable_rects,
-                    }
-                )
-        return blocks
-
-    def get_block_sprite_layout(self, block_def, block_size):
-        texture_path = block_def.get("texture")
-        texture_override = block_def.get("texture_size")
-        stretch_to_fit = block_def.get("stretch_to_fit", True)
-        if stretch_to_fit:
-            return block_size, pygame.Vector2(0, 0)
-
-        if texture_override:
-            native_size = (int(texture_override[0]), int(texture_override[1]))
-        else:
-            native_size = self.textures.get_image_size(texture_path)
-        if not native_size or native_size[0] <= 0 or native_size[1] <= 0:
-            return block_size, pygame.Vector2(0, 0)
-
-        scale = block_size[0] / native_size[0]
-        sprite_w = block_size[0]
-        sprite_h = max(1, int(native_size[1] * scale))
-        offset_y = block_size[1] - sprite_h
-        return (sprite_w, sprite_h), pygame.Vector2(0, offset_y)
-
-    def scale_rects(self, rects, tile_size):
-        scaled = []
-        for rect in rects:
-            scaled.append(
-                [
-                    rect[0] * tile_size,
-                    rect[1] * tile_size,
-                    rect[2] * tile_size,
-                    rect[3] * tile_size,
-                ]
-            )
-        return scaled
-
-    def build_background_blocks(self):
-        background_blocks = []
-        tile_size = self.region["tile_size"]
-        for placement in self.region.get("background_blocks", []):
-            block_id = placement.get("id")
-            if not block_id:
-                continue
-            block_def = self.block_defs.get(block_id)
-            if not block_def:
-                continue
-            positions = []
-            # Handle pos
-            pos = placement.get("pos")
-            if pos:
-                if isinstance(pos[0], list):
-                    positions.extend(pos)
-                else:
-                    positions.append(pos)
-            # Handle fill
-            fill = placement.get("fill")
-            if fill:
-                if len(fill) == 2 and len(fill[0]) == 2 and len(fill[1]) == 2:
-                    x1, y1 = fill[0]
-                    x2, y2 = fill[1]
-                    min_x, max_x = min(x1, x2), max(x1, x2)
-                    min_y, max_y = min(y1, y2), max(y1, y2)
-                    for x in range(min_x, max_x + 1):
-                        for y in range(min_y, max_y + 1):
-                            positions.append([x, y])
-            # Remove duplicates if any
-            positions = list(set(tuple(p) for p in positions))
-            positions = [list(p) for p in positions]
-            for position in positions:
-                anchor = pygame.Vector2(position[0] * tile_size, position[1] * tile_size)
-                origin_tiles = pygame.Vector2(block_def.get("origin", [0, 0]))
-                size_tiles = block_def.get("size", [1, 1])
-                origin = origin_tiles * tile_size
-                block_size = (int(size_tiles[0] * tile_size), int(size_tiles[1] * tile_size))
-                sprite_size, sprite_offset = self.get_block_sprite_layout(block_def, block_size)
-                texture_path = block_def.get("texture")
-                sprite = self.textures.get(texture_path, (int(sprite_size[0]), int(sprite_size[1])))
-                mask = pygame.mask.from_surface(sprite)
-                hitbox = mask.get_rect()
-                block_size = max(hitbox.width, hitbox.height)
-                passable_rects = self.scale_rects(block_def.get("passable_rects", []), tile_size)
-
-                draw_pos = anchor - origin
-                background_blocks.append(
-                    {
-                        "definition": block_def,
-                        "draw_pos": draw_pos,
-                        "block_size": block_size,
-                        "sprite_size": sprite_size,
-                        "sprite_offset": sprite_offset,
-                        "mask": mask,
-                        "passable_rects": passable_rects,
-                    }
-                )
-        return background_blocks
-
     def reset_player(self):
         spawn = self.region["player_spawn"]
         tile_size = self.region["tile_size"]
@@ -341,114 +271,39 @@ class Game:
         self.player_was_moving = False
 
     def update(self, dt):
-        self.update_rain(dt)
-        self.update_menu(dt)
+        if self.show_rain and self.region["rain_enabled"]:
+            self.update_rain(dt)
+        self.character_select.update(dt)
+        self.update_transition(dt)
         if self.state != "play":
             return
-        self.update_player(dt)
+        (
+            self.player_pos,
+            self.player_dir,
+            self.player_anim_time,
+            self.player_is_moving,
+            self.player_was_moving,
+        ) = update_player(
+            dt,
+            self.movement,
+            self.region,
+            self.player_pos,
+            self.player_dir,
+            self.player_anim_time,
+            self.player_is_moving,
+            self.player_mask,
+            self.blocks,
+        )
+        self.region_title.update(dt)
         self.update_camera()
 
-    def update_player(self, dt):
-        speed = self.movement["speed"]
-        bindings = self.movement["bindings"]
-        keys = pygame.key.get_pressed()
 
-        dx = 0
-        dy = 0
-        if any(keys[key] for key in bindings.get("left", [])):
-            dx -= 1
-        if any(keys[key] for key in bindings.get("right", [])):
-            dx += 1
-        if any(keys[key] for key in bindings.get("up", [])):
-            dy -= 1
-        if any(keys[key] for key in bindings.get("down", [])):
-            dy += 1
-
-        move = pygame.Vector2(dx, dy)
-        self.player_was_moving = self.player_is_moving
-        self.player_is_moving = move.length_squared() > 0
-        if self.player_is_moving:
-            move = move.normalize() * speed * dt
-            self.player_pos = self.resolve_collisions(self.player_pos, move)
-            if move.x != 0:
-                self.player_dir = "right" if move.x > 0 else "left"
-            else:
-                self.player_dir = "down" if move.y > 0 else "up"
-        if self.player_is_moving != self.player_was_moving:
-            self.player_anim_time = 0.0
-        self.player_anim_time += dt
-
-        self.clamp_player_to_region()
-
-    def clamp_player_to_region(self):
-        width, height = self.region["size"]
-        tile_size = self.region["tile_size"]
-        max_x = width * tile_size - tile_size
-        max_y = height * tile_size - tile_size
-        self.player_pos.x = max(0, min(self.player_pos.x, max_x))
-        self.player_pos.y = max(0, min(self.player_pos.y, max_y))
-
-    def get_player_rect(self, pos):
-        tile_size = self.region["tile_size"]
-        player_size = int(tile_size * 0.8)
-        return pygame.Rect(int(pos.x), int(pos.y), player_size, player_size)
-
-    def get_solids(self):
-        solids = []
-        for block in self.blocks:
-            mask = block.get("mask")
-            pos = block["draw_pos"]
-            for rect in block.get("solid_rects", []):
-                solids.append((rect, mask, pos))
-        return solids
-
-    def resolve_collisions(self, pos, move):
-        solids = self.get_solids()
-        if not solids:
-            return pos + move
-
-        new_pos = pygame.Vector2(pos)
-
-        # Check X movement
-        new_pos.x += move.x
-        player_rect = self.get_player_rect(new_pos)
-        collision_x = False
-        for solid_rect, solid_mask, solid_pos in solids:
-            if player_rect.colliderect(solid_rect):
-                if self.player_mask and solid_mask:
-                    offset = (int(solid_pos.x - new_pos.x), int(solid_pos.y - new_pos.y))
-                    if self.player_mask.overlap(solid_mask, offset):
-                        collision_x = True
-                        break
-        if collision_x:
-            new_pos.x = pos.x
-
-        # Check Y movement
-        new_pos.y += move.y
-        player_rect = self.get_player_rect(new_pos)
-        collision_y = False
-        for solid_rect, solid_mask, solid_pos in solids:
-            if player_rect.colliderect(solid_rect):
-                if self.player_mask and solid_mask:
-                    offset = (int(solid_pos.x - new_pos.x), int(solid_pos.y - new_pos.y))
-                    if self.player_mask.overlap(solid_mask, offset):
-                        collision_y = True
-                        break
-        if collision_y:
-            new_pos.y = pos.y
-
-        return new_pos
-
-    def update_menu(self, dt):
-        if self.state != "menu":
-            return
-        self.menu_anim_time += dt
 
     def draw_background(self):
         surface = self.render_surface
         surface.fill(self.region["color"])
         self.draw_background_blocks(surface)
-        if self.region["rain_enabled"]:
+        if self.show_rain and self.region["rain_enabled"]:
             self.draw_rain(surface)
         if self.region["fog"]["enabled"]:
             fog_surface = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
@@ -468,7 +323,8 @@ class Game:
     def draw_menu_background(self):
         surface = self.render_surface
         surface.fill(COLORS["bg"])
-        self.draw_rain(surface)
+        if self.settings_menu.show_rain and self.region["rain_enabled"]:
+            self.draw_rain(surface)
 
     def draw_region(self):
         rect = self.get_region_render_rect()
@@ -489,31 +345,45 @@ class Game:
             self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
     def draw_player(self):
-        character_def = self.get_selected_character()
-        if not character_def:
-            return
+        character_def = self.character_select.get_selected_character()
         anim_key = "walk" if self.player_is_moving else "idle"
-        anim_id = character_def.get(anim_key) or character_def.get("idle")
+        anim_id = None
+        if character_def:
+            anim_id = character_def.get(anim_key) or character_def.get("idle") or character_def.get("walk")
         animation = self.get_animation(anim_id)
         if not animation:
             return
-
-        preferred = self.map_player_direction(self.player_dir)
-        frames, fps = self.get_animation_frames(animation, preferred)
+        direction = self.map_player_direction(self.player_dir)
+        frames, fps = self.get_animation_frames(animation, direction)
         frame_index = int(self.player_anim_time * fps) % len(frames)
         frame = frames[frame_index]
-        frame = self.scale_frame_to_tile(frame)
+        render_scale = 1.0
+        if character_def:
+            render_scale = float(character_def.get("scale", 1.0))
+        frame = self.scale_frame_to_tile(frame, render_scale)
         self.player_mask = pygame.mask.from_surface(frame)
+        draw_pos = self.get_player_draw_pos(frame)
+        self.render_surface.blit(frame, (int(draw_pos.x), int(draw_pos.y)))
 
-        draw_pos = self.player_pos - self.camera
-        self.render_surface.blit(frame, draw_pos)
-
-    def scale_frame_to_tile(self, frame):
+    def get_player_draw_pos(self, frame):
         tile_size = int(self.region["tile_size"])
-        target = (tile_size, tile_size)
+        frame_w, frame_h = frame.get_size()
+        offset_x = (tile_size - frame_w) / 2
+        offset_y = tile_size - frame_h
+        return self.player_pos + pygame.Vector2(offset_x, offset_y) - self.camera
+
+    def scale_frame_to_tile(self, frame, render_scale=1.0):
+        tile_size = int(self.region["tile_size"])
+        frame_w, frame_h = frame.get_size()
+        if frame_w <= 0 or frame_h <= 0:
+            return frame
+        target_h = max(1, int(tile_size * max(0.1, render_scale)))
+        scale = target_h / frame_h
+        target_w = max(1, int(round(frame_w * scale)))
+        target = (target_w, target_h)
         if frame.get_size() == target:
             return frame
-        cache_key = (id(frame), tile_size)
+        cache_key = (id(frame), target_w, target_h)
         cached = self.frame_cache.get(cache_key)
         if cached:
             return cached
@@ -615,25 +485,41 @@ class Game:
         if self.state == "menu":
             self.draw_menu_background()
             self.draw_menu()
+        elif self.state == "settings":
+            self.draw_menu_background()
+            self.draw_settings_menu()
         elif self.state == "pause":
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
             self.draw_player()
-            self.draw_pause_overlay()
+            self.pause_overlay.draw(self.render_surface, self.hovered_button)
         else:
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
             self.draw_player()
+            self.region_title.draw(self.render_surface)
 
+        if self.show_fps:
+            self.draw_fps()
+
+        self.draw_transition_overlay()
         scaled = pygame.transform.scale(self.render_surface, (WINDOW_WIDTH, WINDOW_HEIGHT))
         self.screen.blit(scaled, (0, 0))
         pygame.display.flip()
 
+    def draw_fps(self):
+        fps_text = f"FPS {self.clock.get_fps():.0f}"
+        fps_surface = self.font.render(fps_text, False, COLORS["text"])
+        self.render_surface.blit(fps_surface, (4, 4))
+
     def handle_input(self, event):
         if self.state == "menu":
             self.handle_menu_input(event)
+            return
+        if self.state == "settings":
+            self.handle_settings_input(event)
             return
         if self.state == "pause":
             self.handle_pause_input(event)
@@ -647,7 +533,7 @@ class Game:
                 self.state = "pause"
 
     def menu_buttons(self):
-        layout = self.get_menu_layout()
+        layout = self.character_select.get_menu_layout(self.animation_cache)
         button_w = 120
         button_h = 18
         button_gap = 8
@@ -656,21 +542,11 @@ class Game:
         settings_rect = pygame.Rect(center_x, layout["buttons_top"] + button_h + button_gap, button_w, button_h)
         return {"start": start_rect, "settings": settings_rect}
 
-    def pause_menu_buttons(self):
-        button_w = 120
-        button_h = 18
-        button_gap = 8
-        center_x = LOGICAL_WIDTH // 2 - button_w // 2
-        center_y = LOGICAL_HEIGHT // 2
-        resume_rect = pygame.Rect(center_x, center_y - button_h - button_gap // 2, button_w, button_h)
-        title_rect = pygame.Rect(center_x, center_y + button_gap // 2, button_w, button_h)
-        return {"resume": resume_rect, "title": title_rect}
-
     def draw_menu(self):
-        layout = self.get_menu_layout()
+        layout = self.character_select.get_menu_layout(self.animation_cache)
         title_sprite = self.textures.get("ui/title_text.png", (210, 21))
         title_pos = (LOGICAL_WIDTH // 2 - title_sprite.get_width() // 2, layout["title_y"])
-        self.draw_character_select(layout["selector_center_y"])
+        self.character_select.draw(self.render_surface, self.animation_cache)
         self.render_surface.blit(title_sprite, title_pos)
 
         buttons = self.menu_buttons()
@@ -685,71 +561,43 @@ class Game:
             )
             self.render_surface.blit(label_surface, label_pos)
 
-    def draw_pause_overlay(self):
-        # Draw semi-transparent overlay
-        overlay = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(100)
-        self.render_surface.blit(overlay, (0, 0))
-
-        # Draw pause text
-        pause_text_surface = self.menu_font.render("PAUSED", False, COLORS["warning"])
-        pause_text_pos = (
-            LOGICAL_WIDTH // 2 - pause_text_surface.get_width() // 2,
-            LOGICAL_HEIGHT // 2 - 40,
-        )
-        self.render_surface.blit(pause_text_surface, pause_text_pos)
-
-        # Draw buttons
-        buttons = self.pause_menu_buttons()
-        for key, rect in buttons.items():
-            color = COLORS["warning"] if self.hovered_button == key else COLORS["track"]
-            pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
-            label = "RESUME" if key == "resume" else "TITLE"
-            label_surface = self.menu_font.render(label, False, COLORS["text"])
-            label_pos = (
-                rect.centerx - label_surface.get_width() // 2,
-                rect.centery - label_surface.get_height() // 2,
-            )
-            self.render_surface.blit(label_surface, label_pos)
-
     def handle_menu_input(self, event):
         buttons = self.menu_buttons()
-        select_rects = self.character_select_rects()
+        select_rects = self.character_select.character_select_rects(self.animation_cache)
         if event.type == pygame.MOUSEMOTION:
             pos = self.scale_mouse_pos(event.pos)
             self.hovered_button = None
-            self.hovered_arrow = None
+            self.character_select.hovered_arrow = None
             for key, rect in buttons.items():
                 if rect.collidepoint(pos):
                     self.hovered_button = key
                     break
             if select_rects:
                 if select_rects["left"].collidepoint(pos):
-                    self.hovered_arrow = "left"
+                    self.character_select.hovered_arrow = "left"
                 elif select_rects["right"].collidepoint(pos):
-                    self.hovered_arrow = "right"
+                    self.character_select.hovered_arrow = "right"
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = self.scale_mouse_pos(event.pos)
             if select_rects and select_rects["left"].collidepoint(pos):
-                self.select_previous_character()
+                self.character_select.select_previous_character()
                 return
             if select_rects and select_rects["right"].collidepoint(pos):
-                self.select_next_character()
+                self.character_select.select_next_character()
                 return
             if buttons["start"].collidepoint(pos):
-                self.reset()
+                self.start_transition(self.reset)
             elif buttons["settings"].collidepoint(pos):
-                pass
+                self.state = "settings"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-            self.reset()
+            self.start_transition(self.reset)
         if event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
-            self.select_previous_character()
+            self.character_select.select_previous_character()
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
-            self.select_next_character()
+            self.character_select.select_next_character()
 
     def handle_pause_input(self, event):
-        buttons = self.pause_menu_buttons()
+        buttons = self.pause_overlay.get_button_rects()
         if event.type == pygame.MOUSEMOTION:
             pos = self.scale_mouse_pos(event.pos)
             self.hovered_button = None
@@ -765,149 +613,52 @@ class Game:
                 self.state = "menu"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
             self.state = "play"
-        # ESC to resume
         pause_keys = self.movement["bindings"].get("pause", set())
         if event.type == pygame.KEYDOWN and event.key in pause_keys:
             self.state = "play"
+
+    def handle_settings_input(self, event):
+        # Scale mouse position for settings menu input
+        if event.type == pygame.MOUSEMOTION:
+            pos = self.scale_mouse_pos(event.pos)
+            # Create a new event with scaled position for settings menu
+            scaled_event = pygame.event.Event(pygame.MOUSEMOTION, {"pos": pos})
+            new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
+            if new_state != "settings":
+                self.state = new_state
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            pos = self.scale_mouse_pos(event.pos)
+            scaled_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": event.button})
+            new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
+            if new_state != "settings":
+                self.state = new_state
+                if new_state == "menu" and self.settings_menu.show_rain:
+                    self.reset_rain_particles()
+        else:
+            new_state = self.settings_menu.handle_input(event, self.menu_font)
+            if new_state != "settings":
+                self.state = new_state
+
+    def draw_settings_menu(self):
+        self.settings_menu.draw(self.render_surface, self.menu_font)
 
     def scale_mouse_pos(self, pos):
         x = int(pos[0] * LOGICAL_WIDTH / WINDOW_WIDTH)
         y = int(pos[1] * LOGICAL_HEIGHT / WINDOW_HEIGHT)
         return x, y
 
-    def build_character_list(self, characters):
+    def _build_character_list(self, characters):
         characters = list(characters)
         characters.sort(key=lambda item: item.get("display_name", item.get("id", "")))
         return characters
-
-    def get_selected_character(self):
-        if not self.characters:
-            return None
-        return self.characters[self.selected_character_index]
-
-    def select_previous_character(self):
-        if not self.characters:
-            return
-        self.selected_character_index = (self.selected_character_index - 1) % len(self.characters)
-        self.menu_anim_time = 0.0
-
-    def select_next_character(self):
-        if not self.characters:
-            return
-        self.selected_character_index = (self.selected_character_index + 1) % len(self.characters)
-        self.menu_anim_time = 0.0
-
-    def get_neighbor_preview_frames(self):
-        if not self.characters or len(self.characters) < 2:
-            return None, None
-        prev_index = (self.selected_character_index - 1) % len(self.characters)
-        next_index = (self.selected_character_index + 1) % len(self.characters)
-        prev_frame = self.get_character_preview_frame(self.characters[prev_index])
-        next_frame = self.get_character_preview_frame(self.characters[next_index])
-        return prev_frame, next_frame
-
-    def get_character_preview_frame(self, character_def):
-        anim_id = character_def.get("idle") or character_def.get("walk")
-        animation = self.get_animation(anim_id)
-        if not animation:
-            return None
-        frames, fps = self.get_animation_frames(animation, "right")
-        frame_index = int(self.menu_anim_time * fps) % len(frames)
-        return frames[frame_index]
-
-    def draw_character_select(self, center_y):
-        character_def = self.get_selected_character()
-        if not character_def:
-            return
-        anim_id = character_def.get("idle") or character_def.get("walk")
-        animation = self.get_animation(anim_id)
-        if not animation:
-            return
-        frames, fps = self.get_animation_frames(animation, "right")
-        frame_index = int(self.menu_anim_time * fps) % len(frames)
-        frame = frames[frame_index]
-        center_x = LOGICAL_WIDTH // 2
-        sprite_rect = frame.get_rect(center=(center_x, center_y))
-        left_sprite = self.textures.get("ui/left.png", (8, 13))
-        right_sprite = self.textures.get("ui/right.png", (8, 13))
-        left_rect = left_sprite.get_rect(midright=(sprite_rect.left - 6, sprite_rect.centery))
-        right_rect = right_sprite.get_rect(midleft=(sprite_rect.right + 6, sprite_rect.centery))
-        if self.hovered_arrow == "left":
-            left_sprite = self.brighten_sprite(left_sprite, 0.25)
-        if self.hovered_arrow == "right":
-            right_sprite = self.brighten_sprite(right_sprite, 0.25)
-        prev_frame, next_frame = self.get_neighbor_preview_frames()
-        if prev_frame:
-            preview = prev_frame.copy()
-            preview.set_alpha(140)
-            preview_rect = preview.get_rect(midright=(left_rect.left - 6, sprite_rect.centery))
-            self.render_surface.blit(preview, preview_rect)
-        if next_frame:
-            preview = next_frame.copy()
-            preview.set_alpha(140)
-            preview_rect = preview.get_rect(midleft=(right_rect.right + 6, sprite_rect.centery))
-            self.render_surface.blit(preview, preview_rect)
-        self.render_surface.blit(left_sprite, left_rect)
-        self.render_surface.blit(frame, sprite_rect)
-        self.render_surface.blit(right_sprite, right_rect)
-
-    def character_select_rects(self):
-        character_def = self.get_selected_character()
-        if not character_def:
-            return None
-        anim_id = character_def.get("idle") or character_def.get("walk")
-        animation = self.get_animation(anim_id)
-        if not animation:
-            return None
-        frame_size = animation["frame_size"]
-        layout = self.get_menu_layout()
-        center_y = layout["selector_center_y"]
-        center_x = LOGICAL_WIDTH // 2
-        sprite_rect = pygame.Rect(0, 0, frame_size[0], frame_size[1])
-        sprite_rect.center = (center_x, center_y)
-        left_rect = pygame.Rect(0, 0, 8, 13)
-        right_rect = pygame.Rect(0, 0, 8, 13)
-        left_rect.midright = (sprite_rect.left - 6, sprite_rect.centery)
-        right_rect.midleft = (sprite_rect.right + 6, sprite_rect.centery)
-        return {"left": left_rect, "right": right_rect, "sprite": sprite_rect}
-
-    def get_menu_layout(self):
-        title_sprite = self.textures.get("ui/title_text.png", (210, 21))
-        title_h = title_sprite.get_height()
-        selector_h = self.get_character_select_height()
-        selector_gap = 6
-        title_gap = 12
-        button_h = 18
-        button_gap = 8
-        buttons_h = button_h * 2 + button_gap
-        total_h = selector_h + selector_gap + title_h + title_gap + buttons_h
-        top_y = (LOGICAL_HEIGHT - total_h) // 2
-        selector_center_y = top_y + selector_h // 2
-        title_y = top_y + selector_h + selector_gap
-        buttons_top = title_y + title_h + title_gap
-        return {
-            "selector_center_y": selector_center_y,
-            "title_y": title_y,
-            "buttons_top": buttons_top,
-        }
-
-    def get_character_select_height(self):
-        character_def = self.get_selected_character()
-        if not character_def:
-            return 32
-        anim_id = character_def.get("idle") or character_def.get("walk")
-        animation = self.get_animation(anim_id)
-        if not animation:
-            return 32
-        return animation["frame_size"][1]
 
     def get_animation(self, anim_id):
         if not anim_id:
             return None
         if anim_id in self.animation_cache:
             return self.animation_cache[anim_id]
-        if anim_id in self.character_animations:
-            source_defs = self.character_animations
+        if anim_id in self.character_select.character_animations:
+            source_defs = self.character_select.character_animations
         else:
             source_defs = self.entity_defs
         animation = load_animation(source_defs, anim_id, self.textures.root_dir)
@@ -923,11 +674,6 @@ class Game:
         first_sequence = next(iter(sequences.values()))
         return first_sequence, animation["fps"]
 
-    def brighten_sprite(self, sprite, amount):
-        overlay = sprite.copy()
-        boost = int(255 * amount)
-        overlay.fill((boost, boost, boost, 0), special_flags=pygame.BLEND_RGBA_ADD)
-        return overlay
 
     def run(self):
         while True:

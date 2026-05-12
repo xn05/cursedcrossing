@@ -2,7 +2,7 @@
 import os
 import sys
 
-from block_loader import load_block_defs
+from lib.block_loader import load_block_defs
 
 
 def main():

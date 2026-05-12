@@ -1,0 +1,11 @@
+﻿{
+  "id": "dirtground",
+  "name": "Dirtground",
+  "texture": "ground/dirt/dirtground.png",
+  "size": [1, 1],
+  "origin": [1, 1],
+  "solid_rects": [
+    [0, 0, 1, 1]
+  ],
+  "passable_rects": []
+}

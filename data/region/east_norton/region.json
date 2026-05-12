@@ -13,10 +13,17 @@
     "color": [110, 120, 130],
     "alpha": 50
   },
+  "title": {
+    "enabled": true,
+    "image": "ui/midscreentitles/Act1EastNorton.png",
+    "scale": 0.15,
+    "duration": 2.5,
+    "fade_duration": 1.0
+  },
   "background_blocks": [
     {
-      "id": "small_star_tree",
-      "fill": [[8, 6], [9, 7]]
+      "id": "dirtground",
+      "fill": [[7, 5], [9, 7]]
     }
   ],
   "blocks": [

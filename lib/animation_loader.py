@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 import pygame
 
@@ -66,3 +66,4 @@ def load_animation(entity_defs, anim_id, textures_root):
 def load_sheet(textures_root, texture_path):
     full_path = os.path.join(textures_root, texture_path)
     return pygame.image.load(full_path).convert_alpha()
+
