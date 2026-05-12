@@ -3,24 +3,27 @@ import os
 
 import pygame
 
-from lib.settings import COLORS, LOGICAL_WIDTH, LOGICAL_HEIGHT, SHOW_FPS, SHOW_RAIN
+from lib.settings import COLORS, LOGICAL_WIDTH, LOGICAL_HEIGHT, SHOW_FPS, SHOW_RAIN, BORDERLESS_FULLSCREEN, DEVELOPER_OPTIONS
 
 
 class SettingsMenu:
     def __init__(self, settings_path):
         self.settings_path = settings_path
-        self.show_fps, self.show_rain = self.load_settings_flags()
+        self.show_fps, self.show_rain, self.borderless_fullscreen, self.developer_options = self.load_settings_flags()
         self.hovered_setting = None
 
     def load_settings_flags(self):
-        defaults = {"show_fps": SHOW_FPS, "show_rain": SHOW_RAIN}
+        defaults = {"show_fps": SHOW_FPS, "show_rain": SHOW_RAIN, "borderless_fullscreen": BORDERLESS_FULLSCREEN, "developer_options": DEVELOPER_OPTIONS}
         try:
             with open(self.settings_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError):
-            return defaults["show_fps"], defaults["show_rain"]
-        return bool(data.get("show_fps", defaults["show_fps"])), bool(
-            data.get("show_rain", defaults["show_rain"])
+            return defaults["show_fps"], defaults["show_rain"], defaults["borderless_fullscreen"], defaults["developer_options"]
+        return (
+            bool(data.get("show_fps", defaults["show_fps"])),
+            bool(data.get("show_rain", defaults["show_rain"])),
+            bool(data.get("borderless_fullscreen", defaults["borderless_fullscreen"])),
+            bool(data.get("developer_options", defaults["developer_options"])),
         )
 
     def save_settings_flags(self):
@@ -31,6 +34,8 @@ class SettingsMenu:
             data = {}
         data["show_fps"] = bool(self.show_fps)
         data["show_rain"] = bool(self.show_rain)
+        data["borderless_fullscreen"] = bool(self.borderless_fullscreen)
+        data["developer_options"] = bool(self.developer_options)
         with open(self.settings_path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2)
 
@@ -42,13 +47,22 @@ class SettingsMenu:
         self.show_rain = not self.show_rain
         self.save_settings_flags()
 
+    def toggle_borderless_fullscreen(self):
+        self.borderless_fullscreen = not self.borderless_fullscreen
+        self.save_settings_flags()
+
+    def toggle_developer_options(self):
+        self.developer_options = not self.developer_options
+        self.save_settings_flags()
+
     def get_settings_layout(self, menu_font):
         title_surface = menu_font.render("SETTINGS", False, COLORS["text"])
         title_h = title_surface.get_height()
         title_gap = 12
         button_h = 18
         button_gap = 8
-        buttons_h = button_h * 3 + button_gap * 2
+        num_buttons = 5 if self.developer_options else 4
+        buttons_h = button_h * num_buttons + button_gap * (num_buttons - 1)
         total_h = title_h + title_gap + buttons_h
         top_y = (LOGICAL_HEIGHT - total_h) // 2
         title_y = top_y
@@ -64,8 +78,26 @@ class SettingsMenu:
         top_y = layout["buttons_top"]
         fps_rect = pygame.Rect(center_x, top_y, button_w, button_h)
         rain_rect = pygame.Rect(center_x, top_y + button_h + button_gap, button_w, button_h)
-        back_rect = pygame.Rect(center_x, top_y + (button_h + button_gap) * 2, button_w, button_h)
-        return {"show_fps": fps_rect, "show_rain": rain_rect, "back": back_rect}
+        borderless_rect = pygame.Rect(center_x, top_y + (button_h + button_gap) * 2, button_w, button_h)
+        button_offset = 3
+        if self.developer_options:
+            dev_rect = pygame.Rect(center_x, top_y + (button_h + button_gap) * 3, button_w, button_h)
+            back_rect = pygame.Rect(center_x, top_y + (button_h + button_gap) * 4, button_w, button_h)
+            return {
+                "show_fps": fps_rect,
+                "show_rain": rain_rect,
+                "borderless_fullscreen": borderless_rect,
+                "developer_options": dev_rect,
+                "back": back_rect,
+            }
+        else:
+            back_rect = pygame.Rect(center_x, top_y + (button_h + button_gap) * 3, button_w, button_h)
+            return {
+                "show_fps": fps_rect,
+                "show_rain": rain_rect,
+                "borderless_fullscreen": borderless_rect,
+                "back": back_rect,
+            }
 
     def draw(self, surface, menu_font):
         layout = self.get_settings_layout(menu_font)
@@ -81,6 +113,10 @@ class SettingsMenu:
                 label = f"SHOW FPS: {'ON' if self.show_fps else 'OFF'}"
             elif key == "show_rain":
                 label = f"SHOW RAIN: {'ON' if self.show_rain else 'OFF'}"
+            elif key == "borderless_fullscreen":
+                label = f"BORDERLESS FULLSCREEN: {'ON' if self.borderless_fullscreen else 'OFF'}"
+            elif key == "developer_options":
+                label = f"DEVELOPER OPTIONS: {'ON' if self.developer_options else 'OFF'}"
             else:
                 label = "BACK"
             label_surface = menu_font.render(label, False, COLORS["text"])
@@ -105,6 +141,10 @@ class SettingsMenu:
                 self.toggle_fps()
             elif buttons["show_rain"].collidepoint(pos):
                 self.toggle_rain()
+            elif buttons["borderless_fullscreen"].collidepoint(pos):
+                self.toggle_borderless_fullscreen()
+            elif "developer_options" in buttons and buttons["developer_options"].collidepoint(pos):
+                self.toggle_developer_options()
             elif buttons["back"].collidepoint(pos):
                 return "menu"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:

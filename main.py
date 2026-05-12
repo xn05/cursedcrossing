@@ -8,6 +8,7 @@ import pygame
 
 from lib.animation_loader import load_animation
 from lib.block_loader import load_block_defs
+from lib.block_numbering import block_number_to_coords
 from lib.character_loader import load_characters
 from lib.entity_loader import load_entity_defs
 from lib.entities import TextureManager
@@ -30,6 +31,7 @@ from lib.settings import (
     SHOW_RAIN,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
+    BORDERLESS_FULLSCREEN,
 )
 
 
@@ -37,6 +39,8 @@ class Game:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("Cursed Crossing")
+        # Create a default window; actual mode may be reapplied after loading
+        # settings (e.g. borderless fullscreen).
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.render_surface = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
         self.clock = pygame.time.Clock()
@@ -65,6 +69,10 @@ class Game:
         characters = self._build_character_list(characters)
         self.character_select = CharacterSelect(characters, character_animations, self.textures)
         self.settings_menu = SettingsMenu(settings_path)
+
+        # Apply display mode according to settings (borderless fullscreen etc.)
+        self.window_size = self.screen.get_size()
+        self.apply_display_mode()
 
         regions_path = os.path.join(config_dir, "regions.json")
         regions, default_region = load_regions(regions_path)
@@ -128,6 +136,10 @@ class Game:
     def show_fps(self):
         return self.settings_menu.show_fps
 
+    @property
+    def developer_options(self):
+        return self.settings_menu.developer_options
+
     def reset(self):
         self.reset_player()
         self.update_camera()
@@ -187,6 +199,34 @@ class Game:
         overlay.fill((0, 0, 0))
         overlay.set_alpha(alpha)
         self.render_surface.blit(overlay, (0, 0))
+
+    def apply_display_mode(self):
+        # Apply window/display mode according to the settings menu value.
+        try:
+            borderless = bool(getattr(self.settings_menu, "borderless_fullscreen", BORDERLESS_FULLSCREEN))
+        except Exception:
+            borderless = BORDERLESS_FULLSCREEN
+        print(f"[DEBUG] apply_display_mode borderless={borderless}")
+        if borderless:
+            info = pygame.display.Info()
+            display_w, display_h = info.current_w, info.current_h
+            # Prefer FULLSCREEN_DESKTOP where available (keeps desktop resolution)
+            flags = None
+            if getattr(pygame, "FULLSCREEN_DESKTOP", None) is not None:
+                flags = pygame.FULLSCREEN_DESKTOP
+            else:
+                flags = pygame.FULLSCREEN | pygame.NOFRAME
+            try:
+                self.screen = pygame.display.set_mode((display_w, display_h), flags)
+            except Exception as e:
+                print(f"[DEBUG] set_mode with flags failed: {e}")
+                self.screen = pygame.display.set_mode((display_w, display_h), pygame.FULLSCREEN)
+            self.window_size = self.screen.get_size()
+            print(f"[DEBUG] new window size: {self.window_size}")
+        else:
+            self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+            self.window_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+            print(f"[DEBUG] windowed size: {self.window_size}")
 
     def load_region(self, path):
         with open(path, "r", encoding="utf-8") as handle:
@@ -344,6 +384,73 @@ class Game:
             draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
             self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
 
+    def draw_block_id_overlay(self):
+        if not self.developer_options:
+            return
+        
+        tile_size = int(self.region["tile_size"])
+        region_width = int(self.region["size"][0])
+        region_height = int(self.region["size"][1])
+        overlay_color = (100, 100, 100)  # Gray
+        text_color = (150, 150, 150)  # Lighter gray
+        
+        # Draw for foreground blocks
+        for i, block in enumerate(self.blocks):
+            draw_pos = block["draw_pos"] - self.camera
+            block_size = block["block_size"]
+            
+            # Draw outline rectangle
+            outline_rect = pygame.Rect(int(draw_pos.x), int(draw_pos.y), int(block_size), int(block_size))
+            pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
+            
+            # Calculate block number from draw position
+            # Draw position is in pixels, convert to tile coordinates
+            world_x = draw_pos.x + self.camera.x
+            world_y = draw_pos.y + self.camera.y
+            tile_x = int(world_x / tile_size)
+            tile_y = int(world_y / tile_size)
+            
+            # Ensure tile coordinates are within bounds
+            if 0 <= tile_x < region_width and 0 <= tile_y < region_height:
+                # Calculate block number
+                row_from_bottom = region_height - 1 - tile_y
+                block_number = row_from_bottom * region_width + tile_x + 1
+                
+                # Draw block number in the center
+                block_num_text = str(block_number)
+                num_surface = self.menu_font.render(block_num_text, False, text_color)
+                text_x = int(draw_pos.x + (block_size - num_surface.get_width()) / 2)
+                text_y = int(draw_pos.y + (block_size - num_surface.get_height()) / 2)
+                self.render_surface.blit(num_surface, (text_x, text_y))
+        
+        # Draw for background blocks
+        for i, block in enumerate(self.background_blocks):
+            draw_pos = block["draw_pos"] - self.camera
+            block_size = block["block_size"]
+            
+            # Draw outline rectangle
+            outline_rect = pygame.Rect(int(draw_pos.x), int(draw_pos.y), int(block_size), int(block_size))
+            pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
+            
+            # Calculate block number from draw position
+            world_x = draw_pos.x + self.camera.x
+            world_y = draw_pos.y + self.camera.y
+            tile_x = int(world_x / tile_size)
+            tile_y = int(world_y / tile_size)
+            
+            # Ensure tile coordinates are within bounds
+            if 0 <= tile_x < region_width and 0 <= tile_y < region_height:
+                # Calculate block number
+                row_from_bottom = region_height - 1 - tile_y
+                block_number = row_from_bottom * region_width + tile_x + 1
+                
+                # Draw block number in the center
+                block_num_text = str(block_number)
+                num_surface = self.menu_font.render(block_num_text, False, text_color)
+                text_x = int(draw_pos.x + (block_size - num_surface.get_width()) / 2)
+                text_y = int(draw_pos.y + (block_size - num_surface.get_height()) / 2)
+                self.render_surface.blit(num_surface, (text_x, text_y))
+
     def draw_player(self):
         character_def = self.character_select.get_selected_character()
         anim_key = "walk" if self.player_is_moving else "idle"
@@ -492,12 +599,14 @@ class Game:
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
+            self.draw_block_id_overlay()
             self.draw_player()
             self.pause_overlay.draw(self.render_surface, self.hovered_button)
         else:
             self.draw_background()
             self.draw_region()
             self.draw_blocks()
+            self.draw_block_id_overlay()
             self.draw_player()
             self.region_title.draw(self.render_surface)
 
@@ -505,7 +614,8 @@ class Game:
             self.draw_fps()
 
         self.draw_transition_overlay()
-        scaled = pygame.transform.scale(self.render_surface, (WINDOW_WIDTH, WINDOW_HEIGHT))
+        # Scale render surface to current window size
+        scaled = pygame.transform.scale(self.render_surface, self.window_size)
         self.screen.blit(scaled, (0, 0))
         pygame.display.flip()
 
@@ -626,25 +736,32 @@ class Game:
             new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
             if new_state != "settings":
                 self.state = new_state
+                # Apply display changes (e.g. borderless) when leaving settings
+                self.apply_display_mode()
         elif event.type == pygame.MOUSEBUTTONDOWN:
             pos = self.scale_mouse_pos(event.pos)
             scaled_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": event.button})
             new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
             if new_state != "settings":
                 self.state = new_state
+                # Apply display changes (e.g. borderless) when leaving settings
+                self.apply_display_mode()
                 if new_state == "menu" and self.settings_menu.show_rain:
                     self.reset_rain_particles()
         else:
             new_state = self.settings_menu.handle_input(event, self.menu_font)
             if new_state != "settings":
                 self.state = new_state
+                # Apply display changes (e.g. borderless) when leaving settings
+                self.apply_display_mode()
 
     def draw_settings_menu(self):
         self.settings_menu.draw(self.render_surface, self.menu_font)
 
     def scale_mouse_pos(self, pos):
-        x = int(pos[0] * LOGICAL_WIDTH / WINDOW_WIDTH)
-        y = int(pos[1] * LOGICAL_HEIGHT / WINDOW_HEIGHT)
+        window_w, window_h = self.window_size
+        x = int(pos[0] * LOGICAL_WIDTH / window_w)
+        y = int(pos[1] * LOGICAL_HEIGHT / window_h)
         return x, y
 
     def _build_character_list(self, characters):

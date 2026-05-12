@@ -2,7 +2,7 @@
   "logical_width": 320,
   "logical_height": 180,
   "scale": 3,
-  "fps": 60,
+  "fps": 120,
   "fade_in_duration": 1,
   "fog_alpha": 50,
   "rain_drops": 40,
@@ -50,5 +50,6 @@
       90
     ]
   },
-  "developer_options": false
+  "developer_options": false,
+  "borderless_fullscreen": false
 }

@@ -70,10 +70,31 @@ class CharacterSelect:
             return 32
         return animation["frame_size"][1]
 
+    def get_selector_slot_size(self, animation_cache):
+        # Return a fixed slot size for the selector based on the largest
+        # character frame available so the UI layout stays constant.
+        max_w = 32
+        max_h = 32
+        if not self.characters:
+            return max_w, max_h
+        for char in self.characters:
+            anim_id = char.get("idle") or char.get("walk")
+            animation = self.get_animation(anim_id, animation_cache)
+            if not animation:
+                continue
+            w, h = animation.get("frame_size", (0, 0))
+            if w > max_w:
+                max_w = w
+            if h > max_h:
+                max_h = h
+        return max_w, max_h
+
     def get_menu_layout(self, animation_cache):
         title_sprite = self.textures.get("ui/title_text.png", (210, 21))
         title_h = title_sprite.get_height()
-        selector_h = self.get_character_select_height(animation_cache)
+        # Use the selector slot height (max character frame height) so
+        # vertical layout remains constant regardless of selected character.
+        selector_h = self.get_selector_slot_size(animation_cache)[1]
         selector_gap = 6
         title_gap = 12
         button_h = 18
@@ -126,12 +147,22 @@ class CharacterSelect:
         layout = self.get_menu_layout(animation_cache)
         center_y = layout["selector_center_y"]
         center_x = LOGICAL_WIDTH // 2
+
+        # Use a fixed slot sized to the largest character so arrows/previews
+        # remain in the same positions regardless of which character is
+        # currently selected.
+        slot_w, slot_h = self.get_selector_slot_size(animation_cache)
+        slot_rect = pygame.Rect(0, 0, slot_w, slot_h)
+        slot_rect.center = (center_x, center_y)
+
         sprite_rect = pygame.Rect(0, 0, frame_size[0], frame_size[1])
         sprite_rect.center = (center_x, center_y)
+
         left_rect = pygame.Rect(0, 0, 8, 13)
         right_rect = pygame.Rect(0, 0, 8, 13)
-        left_rect.midright = (sprite_rect.left - 6, sprite_rect.centery)
-        right_rect.midleft = (sprite_rect.right + 6, sprite_rect.centery)
+        arrow_gap = 6
+        left_rect.midright = (slot_rect.left - arrow_gap, slot_rect.centery)
+        right_rect.midleft = (slot_rect.right + arrow_gap, slot_rect.centery)
         return {"left": left_rect, "right": right_rect, "sprite": sprite_rect}
 
     def draw(self, surface, animation_cache):
@@ -148,11 +179,18 @@ class CharacterSelect:
         center_x = LOGICAL_WIDTH // 2
         layout = self.get_menu_layout(animation_cache)
         center_y = layout["selector_center_y"]
+
+        # Slot keeps a constant layout area; sprite is centered inside it.
+        slot_w, slot_h = self.get_selector_slot_size(animation_cache)
+        slot_rect = pygame.Rect(0, 0, slot_w, slot_h)
+        slot_rect.center = (center_x, center_y)
+
         sprite_rect = frame.get_rect(center=(center_x, center_y))
         left_sprite = self.textures.get("ui/left.png", (8, 13))
         right_sprite = self.textures.get("ui/right.png", (8, 13))
-        left_rect = left_sprite.get_rect(midright=(sprite_rect.left - 6, sprite_rect.centery))
-        right_rect = right_sprite.get_rect(midleft=(sprite_rect.right + 6, sprite_rect.centery))
+        arrow_gap = 6
+        left_rect = left_sprite.get_rect(midright=(slot_rect.left - arrow_gap, slot_rect.centery))
+        right_rect = right_sprite.get_rect(midleft=(slot_rect.right + arrow_gap, slot_rect.centery))
         if self.hovered_arrow == "left":
             left_sprite = self.brighten_sprite(left_sprite, 0.25)
         if self.hovered_arrow == "right":
@@ -161,12 +199,12 @@ class CharacterSelect:
         if prev_frame:
             preview = prev_frame.copy()
             preview.set_alpha(140)
-            preview_rect = preview.get_rect(midright=(left_rect.left - 6, sprite_rect.centery))
+            preview_rect = preview.get_rect(midright=(left_rect.left - 6, slot_rect.centery))
             surface.blit(preview, preview_rect)
         if next_frame:
             preview = next_frame.copy()
             preview.set_alpha(140)
-            preview_rect = preview.get_rect(midleft=(right_rect.right + 6, sprite_rect.centery))
+            preview_rect = preview.get_rect(midleft=(right_rect.right + 6, slot_rect.centery))
             surface.blit(preview, preview_rect)
         surface.blit(left_sprite, left_rect)
         surface.blit(frame, sprite_rect)

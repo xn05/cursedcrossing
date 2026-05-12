@@ -24,6 +24,8 @@ FOG_ALPHA = int(_SETTINGS.get("fog_alpha", 50))
 RAIN_DROPS = int(_SETTINGS.get("rain_drops", 40))
 SHOW_RAIN = bool(_SETTINGS.get("show_rain", True))
 SHOW_FPS = bool(_SETTINGS.get("show_fps", False))
+BORDERLESS_FULLSCREEN = bool(_SETTINGS.get("borderless_fullscreen", False))
+DEVELOPER_OPTIONS = bool(_SETTINGS.get("developer_options", False))
 
 _colors = _SETTINGS.get("colors", {})
 COLORS = {

@@ -1,4 +1,40 @@
 ﻿import pygame
+from lib.block_numbering import block_number_to_coords
+
+
+def get_block_positions(placement, region_size):
+    """
+    Get block positions from either 'pos' (coordinate-based) or 'numbers' (number-based) field.
+    
+    Args:
+        placement: Block placement dict with either 'pos' or 'numbers' field
+        region_size: [width, height] of the region in tiles
+        
+    Returns:
+        List of [x, y] positions
+    """
+    positions = []
+    region_width, region_height = region_size[0], region_size[1]
+    
+    # Try numbers field first (number-based placement)
+    numbers = placement.get("numbers")
+    if numbers:
+        if not isinstance(numbers, list):
+            numbers = [numbers]
+        for block_num in numbers:
+            coords = block_number_to_coords(block_num, region_width, region_height)
+            if coords:
+                positions.append(list(coords))
+    
+    # If no numbers, try pos field (coordinate-based placement)
+    if not positions:
+        pos = placement.get("pos", [0, 0])
+        if isinstance(pos[0], list):
+            positions.extend(pos)
+        else:
+            positions.append(pos)
+    
+    return positions
 
 
 def scale_rects(rects, tile_size):
@@ -39,6 +75,7 @@ def get_block_sprite_layout(block_def, block_size, textures):
 def build_blocks(region, block_defs, textures):
     blocks = []
     tile_size = region["tile_size"]
+    region_size = region.get("size", [50, 50])
     for placement in region.get("blocks", []):
         block_id = placement.get("id")
         if not block_id:
@@ -46,11 +83,7 @@ def build_blocks(region, block_defs, textures):
         block_def = block_defs.get(block_id)
         if not block_def:
             continue
-        pos = placement.get("pos", [0, 0])
-        if isinstance(pos[0], list):
-            positions = pos
-        else:
-            positions = [pos]
+        positions = get_block_positions(placement, region_size)
         for position in positions:
             anchor = pygame.Vector2(position[0] * tile_size, position[1] * tile_size)
             origin_tiles = pygame.Vector2(block_def.get("origin", [0, 0]))
@@ -95,6 +128,7 @@ def build_blocks(region, block_defs, textures):
 def build_background_blocks(region, block_defs, textures):
     background_blocks = []
     tile_size = region["tile_size"]
+    region_size = region.get("size", [50, 50])
     for placement in region.get("background_blocks", []):
         block_id = placement.get("id")
         if not block_id:
@@ -103,22 +137,54 @@ def build_background_blocks(region, block_defs, textures):
         if not block_def:
             continue
         positions = []
-        pos = placement.get("pos")
-        if pos:
-            if isinstance(pos[0], list):
-                positions.extend(pos)
-            else:
-                positions.append(pos)
-        fill = placement.get("fill")
-        if fill:
-            if len(fill) == 2 and len(fill[0]) == 2 and len(fill[1]) == 2:
-                x1, y1 = fill[0]
-                x2, y2 = fill[1]
+        
+        # Try numbers field first (number-based placement)
+        numbers = placement.get("numbers")
+        if numbers:
+            if not isinstance(numbers, list):
+                numbers = [numbers]
+            for block_num in numbers:
+                coords = block_number_to_coords(block_num, region_size[0], region_size[1])
+                if coords:
+                    positions.append(list(coords))
+        
+        # Try numbers_fill for number-based fill rectangles
+        numbers_fill = placement.get("numbers_fill")
+        if numbers_fill and len(numbers_fill) == 2:
+            num1, num2 = numbers_fill[0], numbers_fill[1]
+            coords1 = block_number_to_coords(num1, region_size[0], region_size[1])
+            coords2 = block_number_to_coords(num2, region_size[0], region_size[1])
+            if coords1 and coords2:
+                x1, y1 = coords1
+                x2, y2 = coords2
                 min_x, max_x = min(x1, x2), max(x1, x2)
                 min_y, max_y = min(y1, y2), max(y1, y2)
                 for x in range(min_x, max_x + 1):
                     for y in range(min_y, max_y + 1):
                         positions.append([x, y])
+        
+        # If no numbers, try pos field (coordinate-based placement)
+        if not positions:
+            pos = placement.get("pos")
+            if pos:
+                if isinstance(pos[0], list):
+                    positions.extend(pos)
+                else:
+                    positions.append(pos)
+        
+        # Handle fill field (coordinate-based fill rectangles)
+        if not positions or not placement.get("numbers"):  # Only fill if no numbers were used
+            fill = placement.get("fill")
+            if fill:
+                if len(fill) == 2 and len(fill[0]) == 2 and len(fill[1]) == 2:
+                    x1, y1 = fill[0]
+                    x2, y2 = fill[1]
+                    min_x, max_x = min(x1, x2), max(x1, x2)
+                    min_y, max_y = min(y1, y2), max(y1, y2)
+                    for x in range(min_x, max_x + 1):
+                        for y in range(min_y, max_y + 1):
+                            positions.append([x, y])
+        
         positions = list(set(tuple(p) for p in positions))
         positions = [list(p) for p in positions]
         for position in positions:

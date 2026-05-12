@@ -1,7 +1,7 @@
 {
   "id": "east_norton",
-  "tile_size": 25,
-  "size": [50, 50],
+  "tile_size": 32,
+  "size": [10, 10],
   "player_spawn": [6, 3],
   "cover_screen": true,
   "color": [20, 22, 26],
@@ -9,7 +9,7 @@
   "border_enabled": false,
   "rain_enabled": false,
   "fog": {
-    "enabled": true,
+    "enabled": false,
     "color": [110, 120, 130],
     "alpha": 50
   },
@@ -22,14 +22,14 @@
   },
   "background_blocks": [
     {
-      "id": "dirtground",
-      "fill": [[7, 5], [9, 7]]
+      "id": "grass",
+      "fill": [[0, 0], [9, 9]]
     }
   ],
   "blocks": [
     {
-      "id": "small_star_tree",
-      "pos": [[8, 6], [14, 10]]
+      "id": "grass_edge_horizontal",
+      "pos": [[0, 4], [1, 4], [2, 4], [3, 4], [4, 4], [5, 4], [6, 4], [7, 4], [8, 4], [9, 4]]
     }
   ]
 }

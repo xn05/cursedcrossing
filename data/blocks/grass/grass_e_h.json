@@ -1,0 +1,11 @@
+{
+  "id": "grass_edge_horizontal",
+  "name": "Grass Edge Horizontal",
+  "texture": "blocks/grass/grass_edge_horizontal.png",
+  "size": [1, 1],
+  "origin": [1, 1],
+  "solid_rects": [
+    [0, 0]
+  ],
+  "passable_rects": []
+}

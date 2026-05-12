@@ -7,6 +7,14 @@
     {
       "id": "dirtground",
       "path": "data/blocks/dirtground/block.json"
+    },
+    {
+      "id": "grass",
+      "path": "data/blocks/grass/grass.json"
+    },
+    {
+      "id": "grass_edge_horizontal",
+      "path": "data/blocks/grass/grass_e_h.json"
     }
   ]
 }
