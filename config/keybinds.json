@@ -1,5 +1,5 @@
 {
-	"speed": 60,
+	"blocks_per_second": 1.875,
 	"bindings": {
 		"up": ["w", "up"],
 		"down": ["s", "down"],

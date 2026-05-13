@@ -1,6 +1,4 @@
-import pygame
-
-from lib.settings import FADE_IN_DURATION, LOGICAL_HEIGHT, LOGICAL_WIDTH
+from lib.settings import FADE_IN_DURATION
 
 
 class GameStateController:
@@ -33,15 +31,6 @@ class GameStateController:
         self.transition_time += dt
         if self.transition_time >= duration:
             self._advance_transition_phase()
-
-    def draw_transition_overlay(self, surface):
-        alpha = self.get_transition_alpha()
-        if alpha <= 0:
-            return
-        overlay = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(alpha)
-        surface.blit(overlay, (0, 0))
 
     def get_transition_alpha(self):
         if not self.transition_active or not self.transition_phase:

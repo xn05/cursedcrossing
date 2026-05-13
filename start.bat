@@ -1,2 +1,2 @@
 @echo off
-".venv/Scripts/python.exe" main.py
+py -3.13 main.py

@@ -1,6 +1,8 @@
-﻿import os
+import os
 
-import pygame
+from PIL import Image
+
+from lib.image_frame import ImageFrame
 
 
 def load_animation(entity_defs, anim_id, textures_root):
@@ -21,7 +23,7 @@ def load_animation(entity_defs, anim_id, textures_root):
     sequences = anim_def.get("sequences", {})
 
     sheets = [load_sheet(textures_root, layer) for layer in layers]
-    sheet_w, sheet_h = sheets[0].get_size()
+    sheet_w, sheet_h = sheets[0].size
     if columns <= 0:
         columns = max(1, sheet_w // 32)
     if rows <= 0:
@@ -32,11 +34,11 @@ def load_animation(entity_defs, anim_id, textures_root):
     def make_frame(index):
         col = index % columns
         row = index // columns
-        frame = pygame.Surface((frame_w, frame_h), pygame.SRCALPHA)
+        frame = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
+        src = (col * frame_w, row * frame_h, (col + 1) * frame_w, (row + 1) * frame_h)
         for sheet in sheets:
-            src = pygame.Rect(col * frame_w, row * frame_h, frame_w, frame_h)
-            frame.blit(sheet, (0, 0), src)
-        return frame
+            frame.alpha_composite(sheet.crop(src), (0, 0))
+        return ImageFrame(frame)
 
     frames = [make_frame(i) for i in range(columns * rows)]
 
@@ -65,5 +67,4 @@ def load_animation(entity_defs, anim_id, textures_root):
 
 def load_sheet(textures_root, texture_path):
     full_path = os.path.join(textures_root, texture_path)
-    return pygame.image.load(full_path).convert_alpha()
-
+    return Image.open(full_path).convert("RGBA")

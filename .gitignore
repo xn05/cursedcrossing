@@ -25,3 +25,15 @@ lib/__pycache__/display_manager.cpython-313.pyc
 lib/__pycache__/game_state.cpython-313.pyc
 lib/__pycache__/rain_system.cpython-313.pyc
 /output/
+lib/__pycache__/geometry.cpython-313.pyc
+lib/__pycache__/image_frame.cpython-313.pyc
+lib/__pycache__/masks.cpython-313.pyc
+tools/__pycache__/validate_blocks.cpython-313.pyc
+__pycache__/animation_loader.cpython-313.pyc
+__pycache__/block_loader.cpython-313.pyc
+__pycache__/character_loader.cpython-313.pyc
+__pycache__/entities.cpython-313.pyc
+__pycache__/entity_loader.cpython-313.pyc
+__pycache__/main.cpython-313.pyc
+__pycache__/region_loader.cpython-313.pyc
+__pycache__/settings.cpython-313.pyc

@@ -1,24 +1,42 @@
-﻿import json
+import json
 
-import pygame
+import arcade
 
 from lib.blocks import get_solids
+from lib.geometry import Rect, Vec2
 
 
 def load_movement(path):
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
-    speed = float(data.get("speed", 60))
+    blocks_per_second = data.get("blocks_per_second")
+    if blocks_per_second is None:
+        blocks_per_second = float(data.get("speed", 60)) / 32
     bindings = {}
     for direction, keys in data.get("bindings", {}).items():
-        key_codes = []
+        key_codes = set()
         for key in keys:
-            try:
-                key_codes.append(pygame.key.key_code(key))
-            except ValueError:
-                continue
-        bindings[direction] = set(key_codes)
-    return {"speed": speed, "bindings": bindings}
+            code = get_arcade_key_code(key)
+            if code is not None:
+                key_codes.add(code)
+        bindings[direction] = key_codes
+    return {"blocks_per_second": float(blocks_per_second), "bindings": bindings}
+
+
+def get_arcade_key_code(key_name):
+    key_name = str(key_name).strip().lower()
+    aliases = {
+        "escape": "ESCAPE",
+        "esc": "ESCAPE",
+        "return": "ENTER",
+        "enter": "ENTER",
+        "up": "UP",
+        "down": "DOWN",
+        "left": "LEFT",
+        "right": "RIGHT",
+        "space": "SPACE",
+    }
+    return getattr(arcade.key, aliases.get(key_name, key_name.upper()), None)
 
 
 def clamp_player_to_region(region, pos):
@@ -33,10 +51,10 @@ def clamp_player_to_region(region, pos):
 
 def get_player_collider_parts(player_collider):
     if not player_collider:
-        return None, pygame.Vector2(0, 0)
+        return None, Vec2(0, 0)
     if isinstance(player_collider, dict):
-        return player_collider.get("mask"), pygame.Vector2(player_collider.get("offset", (0, 0)))
-    return player_collider, pygame.Vector2(0, 0)
+        return player_collider.get("mask"), Vec2(player_collider.get("offset", (0, 0)))
+    return player_collider, Vec2(0, 0)
 
 
 def get_player_rect(region, pos, player_collider=None):
@@ -46,7 +64,7 @@ def get_player_rect(region, pos, player_collider=None):
         rect.topleft = (int(pos.x + offset.x), int(pos.y + offset.y))
         return rect
     tile_size = region["tile_size"]
-    return pygame.Rect(int(pos.x), int(pos.y), tile_size, tile_size)
+    return Rect(int(pos.x), int(pos.y), tile_size, tile_size)
 
 
 def resolve_collisions(region, pos, move, blocks, player_collider):
@@ -54,7 +72,7 @@ def resolve_collisions(region, pos, move, blocks, player_collider):
     if not solids:
         return pos + move
 
-    new_pos = pygame.Vector2(pos)
+    new_pos = Vec2(pos)
     player_mask, player_offset = get_player_collider_parts(player_collider)
 
     new_pos.x += move.x
@@ -110,23 +128,24 @@ def update_player(
     player_is_moving,
     player_mask,
     blocks,
+    pressed_keys=None,
 ):
-    speed = movement["speed"]
+    speed = movement["blocks_per_second"] * region["tile_size"]
     bindings = movement["bindings"]
-    keys = pygame.key.get_pressed()
+    pressed_keys = pressed_keys or set()
 
     dx = 0
     dy = 0
-    if any(keys[key] for key in bindings.get("left", [])):
+    if pressed_keys.intersection(bindings.get("left", set())):
         dx -= 1
-    if any(keys[key] for key in bindings.get("right", [])):
+    if pressed_keys.intersection(bindings.get("right", set())):
         dx += 1
-    if any(keys[key] for key in bindings.get("up", [])):
+    if pressed_keys.intersection(bindings.get("up", set())):
         dy -= 1
-    if any(keys[key] for key in bindings.get("down", [])):
+    if pressed_keys.intersection(bindings.get("down", set())):
         dy += 1
 
-    move = pygame.Vector2(dx, dy)
+    move = Vec2(dx, dy)
     player_was_moving = player_is_moving
     player_is_moving = move.length_squared() > 0
     if player_is_moving:
@@ -142,4 +161,3 @@ def update_player(
 
     player_pos = clamp_player_to_region(region, player_pos)
     return player_pos, player_dir, player_anim_time, player_is_moving, player_was_moving
-

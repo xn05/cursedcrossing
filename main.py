@@ -1,14 +1,14 @@
 import json
 import os
-import sys
 
-import pygame
+import arcade
+from arcade.types import Color
+from PIL import Image, ImageDraw, ImageFont
 
 from lib.animation_loader import load_animation
 from lib.block_loader import load_block_defs
 from lib.block_numbering import coords_to_block_number
 from lib.character_loader import load_characters
-from lib.display_manager import DisplayManager
 from lib.entity_loader import load_entity_defs
 from lib.entities import TextureManager
 from lib.game_state import GameStateController
@@ -20,6 +20,8 @@ from lib.movement import load_movement, update_player
 from lib.character_select import CharacterSelect
 from lib.rain_system import RainSystem
 from lib.settings_menu import SettingsMenu
+from lib.geometry import Rect, Vec2
+from lib.masks import AlphaMask
 from lib.settings import (
     COLORS,
     FOG_ALPHA,
@@ -27,8 +29,8 @@ from lib.settings import (
     HITBOX_COLORS,
     LOGICAL_HEIGHT,
     LOGICAL_WIDTH,
-    SHOW_FPS,
-    SHOW_RAIN,
+    WINDOW_HEIGHT,
+    WINDOW_WIDTH,
 )
 
 
@@ -48,15 +50,42 @@ DEFAULT_RENDER_LAYERS = {
 }
 
 
-class Game:
+def arcade_color(color, alpha=255):
+    return Color(int(color[0]), int(color[1]), int(color[2]), int(alpha))
+
+
+class FontMetrics:
+    def __init__(self, size):
+        self.size = size
+
+    def render(self, text, *_args, **_kwargs):
+        return TextMetrics(text, self.size)
+
+
+class TextMetrics:
+    def __init__(self, text, size):
+        self.text = str(text)
+        self.size = size
+
+    def get_width(self):
+        return max(1, int(len(self.text) * self.size * 0.65))
+
+    def get_height(self):
+        return max(1, int(self.size * 1.6))
+
+
+class Game(arcade.Window):
     def __init__(self):
-        pygame.init()
-        pygame.display.set_caption("Cursed Crossing")
-        self.display = DisplayManager()
-        self.render_surface = pygame.Surface((LOGICAL_WIDTH, LOGICAL_HEIGHT))
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("consolas", 10)
-        self.hud_font_name = "consolas"
+        super().__init__(
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            "Cursed Crossing",
+            update_rate=1 / FPS,
+            draw_rate=1 / FPS,
+            center_window=True,
+            vsync=True,
+        )
+        arcade.set_background_color(COLORS["bg"])
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = os.path.join(base_dir, "data", "entities")
@@ -66,8 +95,10 @@ class Game:
         font_path = os.path.join(base_dir, "assets", "font", "main.ttf")
         settings_path = os.path.join(config_dir, "settings.json")
 
-        self.menu_font = pygame.font.Font(font_path, 6)
-        self.pause_overlay = PauseOverlay(self.menu_font)
+        self.menu_font = FontMetrics(6)
+        self.font_path = font_path
+        self.hud_font_name = "main"
+        self.pause_overlay = PauseOverlay(None)
         self.entity_defs = load_entity_defs(data_dir)
         self.textures = TextureManager(textures_dir)
         keybinds_path = os.path.join(config_dir, "keybinds.json")
@@ -75,15 +106,11 @@ class Game:
             keybinds_path = os.path.join(gameplay_dir, "keybinds.json")
         self.movement = load_movement(keybinds_path)
 
-        # Character selection and settings menus
         characters_path = os.path.join(data_dir, "characters", "characters.json")
         characters, character_animations = load_characters(characters_path, data_dir)
         characters = self._build_character_list(characters)
         self.character_select = CharacterSelect(characters, character_animations, self.textures)
         self.settings_menu = SettingsMenu(settings_path)
-
-        # Apply display mode according to settings (borderless fullscreen etc.)
-        self.display.apply_display_mode(self.settings_menu)
 
         regions_path = os.path.join(config_dir, "regions.json")
         regions, default_region = load_regions(regions_path)
@@ -101,7 +128,7 @@ class Game:
         self.block_defs = load_block_defs(blocks_path, base_dir)
         self.blocks = build_blocks(self.region, self.block_defs, self.textures)
         self.background_blocks = build_background_blocks(self.region, self.block_defs, self.textures)
-        self.camera = pygame.Vector2(0, 0)
+        self.camera = Vec2(0, 0)
         self.frame_cache = {}
 
         rain_def = self.entity_defs.get("environment.rain", {})
@@ -109,8 +136,13 @@ class Game:
         self.region_particle_effects = self.build_region_particle_effects(rain_def)
 
         self.animation_cache = {}
+        self.pressed_keys = set()
+        self.mouse_logical = (0, 0)
+        self.current_fps = 0.0
+        self.text_cache = {}
+        self.hover_texture_cache = {}
 
-        self.player_pos = pygame.Vector2(0, 0)
+        self.player_pos = Vec2(0, 0)
         self.player_dir = "down"
         self.player_anim_time = 0.0
         self.player_is_moving = False
@@ -119,6 +151,7 @@ class Game:
         self.player_collider_cache = {}
         self.settings_return_state = "menu"
         self.reset_player()
+        self.apply_display_mode()
 
     @property
     def show_rain(self):
@@ -156,6 +189,27 @@ class Game:
     def hovered_button(self, value):
         self.game_state.hovered_button = value
 
+    @property
+    def logical_scale(self):
+        return min(self.width / LOGICAL_WIDTH, self.height / LOGICAL_HEIGHT)
+
+    @property
+    def viewport_rect(self):
+        scale = self.logical_scale
+        width = int(LOGICAL_WIDTH * scale)
+        height = int(LOGICAL_HEIGHT * scale)
+        x = int((self.width - width) / 2)
+        y = int((self.height - height) / 2)
+        return Rect(x, y, width, height)
+
+    def apply_display_mode(self):
+        if self.settings_menu.borderless_fullscreen:
+            self.set_fullscreen(True)
+            return
+        if self.fullscreen:
+            self.set_fullscreen(False)
+        self.set_size(WINDOW_WIDTH, WINDOW_HEIGHT)
+
     def reset(self):
         self.reset_player()
         self.update_camera()
@@ -167,7 +221,6 @@ class Game:
         effects = []
         if self.region.get("rain_enabled"):
             effects.append(RainSystem(rain_def))
-
         ambient_particles = self.region.get("ambient_particles", [])
         if isinstance(ambient_particles, dict):
             ambient_particles = [ambient_particles]
@@ -228,14 +281,13 @@ class Game:
 
     def get_region_origin(self):
         if self.region.get("cover_screen"):
-            return pygame.Vector2(0, 0)
+            return Vec2(0, 0)
         width, height = self.region["size"]
         tile_size = self.region["tile_size"]
-        region_w = width * tile_size
-        region_h = height * tile_size
-        origin_x = (LOGICAL_WIDTH - region_w) // 2
-        origin_y = (LOGICAL_HEIGHT - region_h) // 2
-        return pygame.Vector2(origin_x, origin_y)
+        return Vec2(
+            (LOGICAL_WIDTH - width * tile_size) // 2,
+            (LOGICAL_HEIGHT - height * tile_size) // 2,
+        )
 
     def get_region_pixel_size(self):
         width, height = self.region["size"]
@@ -244,25 +296,22 @@ class Game:
 
     def get_player_anchor(self):
         tile_size = self.region["tile_size"]
-        return self.player_pos + pygame.Vector2(tile_size / 2, tile_size / 2)
+        return self.player_pos + Vec2(tile_size / 2, tile_size / 2)
 
     def get_camera_offset(self):
         world_w, world_h = self.get_region_pixel_size()
         target = self.get_player_anchor()
         cam_x = target.x - LOGICAL_WIDTH / 2
         cam_y = target.y - LOGICAL_HEIGHT / 2
-
         if world_w <= LOGICAL_WIDTH:
             cam_x = -(LOGICAL_WIDTH - world_w) / 2
         else:
             cam_x = max(0, min(cam_x, world_w - LOGICAL_WIDTH))
-
         if world_h <= LOGICAL_HEIGHT:
             cam_y = -(LOGICAL_HEIGHT - world_h) / 2
         else:
             cam_y = max(0, min(cam_y, world_h - LOGICAL_HEIGHT))
-
-        return pygame.Vector2(cam_x, cam_y)
+        return Vec2(cam_x, cam_y)
 
     def update_camera(self):
         self.camera = self.get_camera_offset()
@@ -270,13 +319,15 @@ class Game:
     def reset_player(self):
         spawn = self.region["player_spawn"]
         tile_size = self.region["tile_size"]
-        self.player_pos = pygame.Vector2(spawn[0] * tile_size, spawn[1] * tile_size)
+        self.player_pos = Vec2(spawn[0] * tile_size, spawn[1] * tile_size)
         self.player_dir = "down"
         self.player_anim_time = 0.0
         self.player_is_moving = False
         self.player_was_moving = False
 
-    def update(self, dt):
+    def on_update(self, dt):
+        if dt > 0:
+            self.current_fps = 1.0 / dt
         if self.state in ("menu", "settings"):
             if self.show_rain:
                 self.title_rain.update(dt)
@@ -288,6 +339,8 @@ class Game:
         self.game_state.update_transition(dt)
         if self.state != "play":
             return
+
+        self.player_mask = self.get_player_collision_mask()
         (
             self.player_pos,
             self.player_dir,
@@ -304,105 +357,141 @@ class Game:
             self.player_is_moving,
             self.player_mask,
             self.blocks,
+            self.pressed_keys,
         )
         self.region_title.update(dt)
         self.update_camera()
 
-
-
-    def draw_background(self):
-        surface = self.render_surface
-        surface.fill(self.region["color"])
-        self.draw_background_blocks(surface)
-
-    def draw_region_background_color(self, surface):
-        surface.fill(self.region["color"])
-
-    def draw_background_blocks(self, surface):
-        for block in self.background_blocks:
-            block_def = block["definition"]
-            texture_path = block_def.get("texture")
-            size = block["sprite_size"]
-            sprite = self.textures.get(texture_path, (int(size[0]), int(size[1])))
-            sprite = self.apply_block_brightness(sprite, block_def)
-            draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
-            surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
-
-    def draw_menu_background(self):
-        surface = self.render_surface
-        surface.fill(COLORS["bg"])
-        if self.settings_menu.show_rain:
-            self.title_rain.draw(surface, self.textures)
-
-    def draw_region(self):
-        rect = self.get_region_render_rect()
-        if self.region["border_enabled"]:
-            pygame.draw.rect(self.render_surface, self.region["border_color"], rect, 1)
-
-    def get_region_render_rect(self):
-        world_w, world_h = self.get_region_pixel_size()
-        return pygame.Rect(int(-self.camera.x), int(-self.camera.y), world_w, world_h)
-
-    def draw_blocks(self):
-        for block in self.blocks:
-            block_def = block["definition"]
-            texture_path = block_def.get("texture")
-            size = block["sprite_size"]
-            sprite = self.textures.get(texture_path, (int(size[0]), int(size[1])))
-            sprite = self.apply_block_brightness(sprite, block_def)
-            draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
-            self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
-
-    def draw_particles(self, surface):
-        for particle_system in self.region_particle_effects:
-            particle_system.draw(surface, self.textures)
-
-    def draw_region_effects(self, surface):
-        light_level = float(self.region.get("light_level", 1.0))
-        if light_level < 1.0:
-            darkness = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            darkness.fill((0, 0, 0, max(0, min(255, int(255 * (1.0 - light_level))))))
-            surface.blit(darkness, (0, 0))
-        elif light_level > 1.0:
-            brightness = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            alpha = int(255 * min(1.0, (light_level - 1.0) * 0.5))
-            brightness.fill((255, 255, 255, max(0, min(255, alpha))))
-            surface.blit(brightness, (0, 0))
-
-        if self.region["fog"]["enabled"]:
-            fog_surface = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            fog_surface.fill((*self.region["fog"]["color"], self.region["fog"]["alpha"]))
-            surface.blit(fog_surface, (0, 0))
-
-    def draw_region_title(self, surface):
-        self.region_title.draw(surface)
-
-    def get_render_stages(self, include_titles=True):
-        stages = {
-            "region_background": lambda: self.draw_region_background_color(self.render_surface),
-            "background_blocks": lambda: self.draw_background_blocks(self.render_surface),
-            "region_border": self.draw_region,
-            "blocks": self.draw_blocks,
-            "player": self.draw_player,
-            "particles": lambda: self.draw_particles(self.render_surface),
-            "fog": lambda: self.draw_region_effects(self.render_surface),
-            "titles": lambda: self.draw_region_title(self.render_surface),
-        }
-        if not include_titles:
-            stages.pop("titles", None)
-
-        order_index = {stage: index for index, stage in enumerate(DEFAULT_RENDER_STAGE_ORDER)}
-        render_layers = self.region.get("render_layers", DEFAULT_RENDER_LAYERS)
-        return sorted(
-            stages.items(),
-            key=lambda item: (render_layers.get(item[0], DEFAULT_RENDER_LAYERS[item[0]]), order_index[item[0]]),
+    def logical_to_screen_rect(self, rect, camera=False):
+        x = rect.x - (self.camera.x if camera else 0)
+        y = rect.y - (self.camera.y if camera else 0)
+        viewport = self.viewport_rect
+        scale = self.logical_scale
+        return arcade.LBWH(
+            viewport.x + x * scale,
+            viewport.y + (LOGICAL_HEIGHT - y - rect.height) * scale,
+            rect.width * scale,
+            rect.height * scale,
         )
+
+    def mouse_to_logical(self, x, y):
+        viewport = self.viewport_rect
+        scale = self.logical_scale
+        return (
+            int((x - viewport.x) / scale),
+            int(LOGICAL_HEIGHT - (y - viewport.y) / scale),
+        )
+
+    def draw_texture(self, texture, x, y, width, height, camera=False, alpha=255, pixelated=True, color=(255, 255, 255)):
+        screen_rect = self.logical_to_screen_rect(Rect(int(x), int(y), int(width), int(height)), camera=camera)
+        arcade.draw_texture_rect(texture, screen_rect, color=arcade_color(color, alpha), alpha=alpha, pixelated=pixelated)
+
+    def get_hover_overlay_texture(self, texture):
+        key = id(texture)
+        cached = self.hover_texture_cache.get(key)
+        if cached:
+            return cached
+        alpha = texture.image.getchannel("A").point(lambda value: int(value * 0.30))
+        image = Image.new("RGBA", texture.image.size, (255, 255, 255, 0))
+        image.putalpha(alpha)
+        cached = arcade.Texture(image)
+        self.hover_texture_cache[key] = cached
+        return cached
+
+    def draw_hoverable_texture(self, texture, rect, hovered=False):
+        self.draw_texture(texture, rect.x, rect.y, rect.width, rect.height)
+        if hovered:
+            overlay = self.get_hover_overlay_texture(texture)
+            self.draw_texture(overlay, rect.x, rect.y, rect.width, rect.height)
+
+    def draw_rect(self, rect, color, camera=False, alpha=255):
+        arcade.draw_rect_filled(self.logical_to_screen_rect(rect, camera=camera), (*color, alpha))
+
+    def draw_rect_outline(self, rect, color, camera=False, width=1, alpha=255):
+        arcade.draw_rect_outline(self.logical_to_screen_rect(rect, camera=camera), (*color, alpha), max(1, width * self.logical_scale))
+
+    def draw_pixel_panel(self, rect, color, alpha=255, notch=2):
+        notch = max(1, int(notch))
+        inner_w = max(1, rect.width - notch * 2)
+        inner_h = max(1, rect.height - notch * 2)
+        self.draw_rect(Rect(rect.x + notch, rect.y, inner_w, rect.height), color, alpha=alpha)
+        self.draw_rect(Rect(rect.x, rect.y + notch, rect.width, inner_h), color, alpha=alpha)
+        if notch > 1:
+            self.draw_rect(Rect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2), color, alpha=alpha)
+
+    def get_text_texture(self, text, color, font_size=8, alpha=255):
+        text = str(text)
+        cache_key = (text, tuple(color), int(font_size), int(alpha))
+        cached = self.text_cache.get(cache_key)
+        if cached:
+            return cached
+
+        font = ImageFont.truetype(self.font_path, max(1, int(font_size)))
+        bbox = font.getbbox(text)
+        width = max(1, bbox[2] - bbox[0])
+        height = max(1, bbox[3] - bbox[1])
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.text((-bbox[0], -bbox[1]), text, font=font, fill=(*color, int(alpha)))
+        solid_alpha = image.getchannel("A").point(lambda value: int(alpha) if value >= 128 else 0)
+        image = Image.new("RGBA", image.size, (*color, 0))
+        image.putalpha(solid_alpha)
+        visible_bounds = image.getchannel("A").getbbox()
+        if visible_bounds:
+            image = image.crop(visible_bounds)
+            width, height = image.size
+        cached = (arcade.Texture(image), width, height)
+        self.text_cache[cache_key] = cached
+        return cached
+
+    def draw_text_top_left(self, text, x, y, color, font_size=8, anchor_x="left", anchor_y="top", alpha=255):
+        texture, width, height = self.get_text_texture(text, color, font_size, alpha)
+        draw_x = x
+        if anchor_x == "center":
+            draw_x -= width / 2
+        elif anchor_x == "right":
+            draw_x -= width
+
+        draw_y = y
+        if anchor_y == "center":
+            draw_y -= height / 2
+        elif anchor_y in ("bottom", "baseline"):
+            draw_y -= height
+
+        self.draw_texture(texture, draw_x, draw_y, width, height, alpha=alpha, pixelated=True)
+
+    def on_draw(self):
+        self.clear()
+        if self.state == "menu":
+            self.draw_menu_background()
+            self.draw_menu()
+            self.draw_exit_button()
+        elif self.state == "settings":
+            self.draw_menu_background()
+            self.draw_settings_menu()
+        elif self.state == "pause":
+            self.draw_game_layers(include_titles=False)
+            if self.show_block_id_overlay:
+                self.draw_block_id_overlay()
+            if self.show_hitboxes:
+                self.draw_hitboxes()
+            self.draw_pause_overlay()
+        else:
+            self.draw_game_layers(include_titles=False)
+            if self.show_block_id_overlay:
+                self.draw_block_id_overlay()
+            if self.show_hitboxes:
+                self.draw_hitboxes()
+            self.draw_region_title()
+
+        if self.show_fps:
+            self.draw_fps()
+        self.draw_transition_overlay()
 
     def get_render_stage_names(self, include_titles=True):
         stage_names = list(DEFAULT_RENDER_STAGE_ORDER)
         if not include_titles:
             stage_names.remove("titles")
-
         order_index = {stage: index for index, stage in enumerate(DEFAULT_RENDER_STAGE_ORDER)}
         render_layers = self.region.get("render_layers", DEFAULT_RENDER_LAYERS)
         return sorted(
@@ -411,106 +500,387 @@ class Game:
         )
 
     def draw_game_layers(self, include_titles=True):
-        self.render_surface.fill((0, 0, 0))
-        for _, draw_stage in self.get_render_stages(include_titles):
-            draw_stage()
-
-    def draw_region_background_color_high_res(self):
-        self.display.screen.fill(self.region["color"])
-
-    def draw_region_border_high_res(self):
-        if not self.region["border_enabled"]:
-            return
-        screen_rect = self.display.logical_to_screen_rect(self.get_region_render_rect())
-        pygame.draw.rect(self.display.screen, self.region["border_color"], screen_rect, max(1, int(self.display.scale)))
-
-    def draw_block_collection_high_res(self, blocks):
-        for block in blocks:
-            block_def = block["definition"]
-            texture_path = block_def.get("texture")
-            size = block["sprite_size"]
-            sprite = self.textures.get_raw(texture_path)
-            sprite = self.apply_block_brightness(sprite, block_def)
-            draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
-            self.display.blit_logical(sprite, draw_pos, (int(size[0]), int(size[1])), smooth=True)
-
-    def draw_background_blocks_high_res(self):
-        self.draw_block_collection_high_res(self.background_blocks)
-
-    def draw_blocks_high_res(self):
-        self.draw_block_collection_high_res(self.blocks)
-
-    def draw_particles_high_res(self):
-        for particle_system in self.region_particle_effects:
-            for particle in particle_system.particles:
-                sprite = self.textures.get_raw(particle["texture"])
-                if particle_system.fade:
-                    sprite = sprite.copy()
-                    remaining = max(0.0, 1.0 - particle["age"] / particle_system.lifetime)
-                    sprite.set_alpha(int(255 * remaining))
-                self.display.blit_logical(sprite, particle["pos"], sprite.get_size(), smooth=True)
-
-    def draw_region_title_high_res(self):
-        self.region_title.draw_high_res(self.display)
-
-    def draw_game_layers_high_res(self, include_titles=True):
         stages = {
-            "region_background": self.draw_region_background_color_high_res,
-            "background_blocks": self.draw_background_blocks_high_res,
-            "region_border": self.draw_region_border_high_res,
-            "blocks": self.draw_blocks_high_res,
-            "player": self.draw_player_high_res,
-            "particles": self.draw_particles_high_res,
-            "fog": self.draw_region_effects_high_res,
-            "titles": self.draw_region_title_high_res,
+            "region_background": self.draw_region_background,
+            "background_blocks": lambda: self.draw_block_collection(self.background_blocks),
+            "region_border": self.draw_region_border,
+            "blocks": lambda: self.draw_block_collection(self.blocks),
+            "player": self.draw_player,
+            "particles": self.draw_region_particles,
+            "fog": self.draw_region_effects,
+            "titles": self.draw_region_title,
         }
         for stage_name in self.get_render_stage_names(include_titles):
             stages[stage_name]()
 
-    def apply_block_brightness(self, sprite, block_def):
-        brightness = float(block_def.get("brightness", 1.0))
-        if brightness == 1.0:
-            return sprite
-        sprite = sprite.copy()
-        if brightness < 1.0:
-            shade = pygame.Surface(sprite.get_size(), pygame.SRCALPHA)
-            shade.fill((0, 0, 0, max(0, min(255, int(255 * (1.0 - brightness))))))
-            sprite.blit(shade, (0, 0))
-        else:
-            boost = min(255, int(255 * min(1.0, (brightness - 1.0) * 0.5)))
-            sprite.fill((boost, boost, boost, 0), special_flags=pygame.BLEND_RGBA_ADD)
-        return sprite
+    def draw_region_background(self):
+        self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), tuple(self.region["color"]))
 
-    def draw_block_id_overlay(self):
-        if not self.show_block_id_overlay:
+    def draw_region_border(self):
+        if not self.region["border_enabled"]:
+            return
+        world_w, world_h = self.get_region_pixel_size()
+        self.draw_rect_outline(Rect(0, 0, world_w, world_h), tuple(self.region["border_color"]), camera=True)
+
+    def block_tint(self, block_def):
+        brightness = float(block_def.get("brightness", 1.0))
+        if brightness >= 1.0:
+            return (255, 255, 255)
+        value = max(0, min(255, int(255 * brightness)))
+        return (value, value, value)
+
+    def draw_block_collection(self, blocks):
+        for block in blocks:
+            block_def = block["definition"]
+            texture = self.textures.get_arcade(block_def.get("texture"))
+            draw_pos = block["draw_pos"] + block["sprite_offset"]
+            size = block["sprite_size"]
+            self.draw_texture(
+                texture,
+                draw_pos.x,
+                draw_pos.y,
+                int(size[0]),
+                int(size[1]),
+                camera=True,
+                color=self.block_tint(block_def),
+            )
+
+    def draw_region_particles(self):
+        for particle_system in self.region_particle_effects:
+            self.draw_particles(particle_system, camera=False)
+
+    def draw_particles(self, particle_system, camera=False):
+        for particle in particle_system.particles:
+            texture = self.textures.get_arcade(particle["texture"])
+            size = self.textures.get_image_size(particle["texture"]) or (2, 4)
+            alpha = 255
+            if particle_system.fade:
+                remaining = max(0.0, 1.0 - particle["age"] / particle_system.lifetime)
+                alpha = int(255 * remaining)
+            self.draw_texture(texture, particle["pos"].x, particle["pos"].y, size[0], size[1], camera=camera, alpha=alpha)
+
+    def draw_region_effects(self):
+        light_level = float(self.region.get("light_level", 1.0))
+        if light_level < 1.0:
+            alpha = max(0, min(255, int(255 * (1.0 - light_level))))
+            self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), (0, 0, 0), alpha=alpha)
+        elif light_level > 1.0:
+            alpha = int(255 * min(1.0, (light_level - 1.0) * 0.5))
+            self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), (255, 255, 255), alpha=alpha)
+        if self.region["fog"]["enabled"]:
+            self.draw_rect(
+                Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT),
+                tuple(self.region["fog"]["color"]),
+                alpha=self.region["fog"]["alpha"],
+            )
+
+    def draw_region_title(self):
+        if not self.region_title.active:
+            return
+        image_path = self.region_title.config.get("image")
+        if not image_path:
+            return
+        base_size = self.textures.get_image_size(image_path)
+        if not base_size:
+            return
+        scale = max(0.01, float(self.region_title.config.get("scale", 1.0)))
+        logical_size = (max(1, int(base_size[0] * scale)), max(1, int(base_size[1] * scale)))
+        duration = max(0.0, float(self.region_title.config.get("duration", 0.0)))
+        fade = max(0.0, float(self.region_title.config.get("fade_duration", 0.0)))
+        alpha = 255
+        if fade > 0.0 and self.region_title.time > duration:
+            remaining = max(0.0, duration + fade - self.region_title.time)
+            alpha = int(255 * min(1.0, remaining / fade))
+        texture = self.textures.get_arcade(image_path)
+        self.draw_texture(
+            texture,
+            LOGICAL_WIDTH / 2 - logical_size[0] / 2,
+            LOGICAL_HEIGHT / 2 - logical_size[1] / 2,
+            logical_size[0],
+            logical_size[1],
+            alpha=alpha,
+        )
+
+    def draw_player(self):
+        raw_frame, render_scale = self.get_player_source_frame()
+        if not raw_frame:
+            return
+        logical_size = self.get_player_logical_size(raw_frame, render_scale)
+        draw_pos = self.get_player_draw_pos_from_size(logical_size)
+        texture = self.textures.get_arcade_from_frame(raw_frame, ("player", id(raw_frame)))
+        self.draw_texture(texture, draw_pos.x + self.camera.x, draw_pos.y + self.camera.y, *logical_size, camera=True)
+
+    def draw_menu_background(self):
+        self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), COLORS["bg"])
+        if self.settings_menu.show_rain:
+            self.draw_particles(self.title_rain)
+
+    def menu_buttons(self):
+        layout = self.character_select.get_menu_layout(self.animation_cache)
+        button_w = 120
+        button_h = 18
+        button_gap = 8
+        center_x = LOGICAL_WIDTH // 2 - button_w // 2
+        start_rect = Rect(center_x, layout["buttons_top"], button_w, button_h)
+        settings_rect = Rect(center_x, layout["buttons_top"] + button_h + button_gap, button_w, button_h)
+        return {"start": start_rect, "settings": settings_rect}
+
+    def draw_menu(self):
+        layout = self.character_select.get_menu_layout(self.animation_cache)
+        self.draw_character_select()
+        title_size = (210, 21)
+        title_texture = self.textures.get_arcade("ui/title_text.png")
+        title_x = LOGICAL_WIDTH // 2 - title_size[0] // 2
+        self.draw_texture(title_texture, title_x, layout["title_y"], *title_size)
+        for key, rect in self.menu_buttons().items():
+            label = "START GAME" if key == "start" else "SETTINGS"
+            self.draw_button(rect, label, self.hovered_button == key)
+
+    def draw_character_select(self):
+        character_def = self.character_select.get_selected_character()
+        if not character_def:
+            return
+        anim_id = character_def.get("idle") or character_def.get("walk")
+        animation = self.character_select.get_animation(anim_id, self.animation_cache)
+        if not animation:
+            return
+        frames, fps = self.character_select.get_animation_frames(animation, "right")
+        frame_index = int(self.character_select.menu_anim_time * fps) % len(frames)
+        frame = frames[frame_index]
+        rects = self.character_select.character_select_rects(self.animation_cache)
+        if not rects:
             return
 
+        prev_frame, next_frame = self.character_select.get_neighbor_preview_frames(self.animation_cache)
+        if prev_frame:
+            preview_rect = prev_frame.get_rect(midright=(rects["left"].left - 6, rects["left"].centery))
+            self.draw_surface_frame(prev_frame, preview_rect.x, preview_rect.y, alpha=140)
+        if next_frame:
+            preview_rect = next_frame.get_rect(midleft=(rects["right"].right + 6, rects["right"].centery))
+            self.draw_surface_frame(next_frame, preview_rect.x, preview_rect.y, alpha=140)
+
+        left_texture = self.textures.get_arcade("ui/left.png")
+        right_texture = self.textures.get_arcade("ui/right.png")
+        self.draw_hoverable_texture(left_texture, rects["left"], self.character_select.hovered_arrow == "left")
+        self.draw_hoverable_texture(right_texture, rects["right"], self.character_select.hovered_arrow == "right")
+        self.draw_surface_frame(frame, rects["sprite"].x, rects["sprite"].y)
+
+    def draw_surface_frame(self, frame, x, y, alpha=255):
+        texture = self.textures.get_arcade_from_frame(frame, ("frame", id(frame)))
+        self.draw_texture(texture, x, y, frame.get_width(), frame.get_height(), alpha=alpha)
+
+    def draw_button(self, rect, label, hovered):
+        base = COLORS["warning"] if hovered else COLORS["track"]
+        self.draw_pixel_panel(rect, base, notch=2)
+        self.draw_text_top_left(label, rect.centerx, rect.centery, (255, 255, 255), font_size=6, anchor_x="center", anchor_y="center")
+
+    def get_exit_button_rect(self):
+        size = 14
+        margin = 4
+        return Rect(margin, LOGICAL_HEIGHT - size - margin, size, size)
+
+    def draw_exit_button(self):
+        rect = self.get_exit_button_rect()
+        base = COLORS["warning"] if rect.collidepoint(self.mouse_logical) else COLORS["track"]
+        self.draw_pixel_panel(rect, base, notch=2)
+        self.draw_text_top_left("X", rect.centerx, rect.centery, (255, 255, 255), font_size=6, anchor_x="center", anchor_y="center")
+
+    def draw_settings_menu(self):
+        layout = self.settings_menu.get_settings_layout(self.menu_font)
+        self.draw_text_top_left("SETTINGS", LOGICAL_WIDTH // 2, layout["title_y"], COLORS["text"], font_size=6, anchor_x="center")
+        for key, rect in self.settings_menu.settings_buttons(self.menu_font).items():
+            if key == "show_fps":
+                label = f"SHOW FPS: {'ON' if self.settings_menu.show_fps else 'OFF'}"
+            elif key == "show_rain":
+                label = f"SHOW RAIN: {'ON' if self.settings_menu.show_rain else 'OFF'}"
+            elif key == "borderless_fullscreen":
+                label = f"BORDERLESS FULLSCREEN: {'ON' if self.settings_menu.borderless_fullscreen else 'OFF'}"
+            elif key == "show_block_id_overlay":
+                label = f"BLOCK ID OVERLAY: {'ON' if self.settings_menu.show_block_id_overlay else 'OFF'}"
+            elif key == "show_hitboxes":
+                label = f"SHOW HITBOXES: {'ON' if self.settings_menu.show_hitboxes else 'OFF'}"
+            else:
+                label = "BACK"
+            self.draw_button(rect, label, self.settings_menu.hovered_setting == key)
+
+    def draw_pause_overlay(self):
+        self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), (0, 0, 0), alpha=100)
+        self.draw_text_top_left("PAUSED", LOGICAL_WIDTH // 2, LOGICAL_HEIGHT // 2 - 40, COLORS["warning"], font_size=6, anchor_x="center")
+        for key, rect in self.pause_overlay.get_button_rects().items():
+            label = self.pause_overlay.get_button_label(key)
+            self.draw_button(rect, label, self.hovered_button == key)
+
+    def draw_fps(self):
+        self.draw_text_top_left(f"FPS {self.current_fps:.0f}", 4, 4, COLORS["text"], font_size=8)
+
+    def draw_block_id_overlay(self):
         tile_size = int(self.region["tile_size"])
         region_width = int(self.region["size"][0])
         region_height = int(self.region["size"][1])
-        overlay_color = (100, 100, 100)
-
         for tile_y in range(region_height):
             for tile_x in range(region_width):
-                draw_x = tile_x * tile_size - self.camera.x
-                draw_y = tile_y * tile_size - self.camera.y
-                outline_rect = pygame.Rect(int(draw_x), int(draw_y), tile_size, tile_size)
-                pygame.draw.rect(self.render_surface, overlay_color, outline_rect, 1)
+                block_number = coords_to_block_number(tile_x, tile_y, region_width, region_height)
+                rect = Rect(tile_x * tile_size, tile_y * tile_size, tile_size, tile_size)
+                self.draw_rect_outline(rect, (110, 110, 110), camera=True)
+                screen = self.logical_to_screen_rect(rect, camera=True)
+                viewport = self.viewport_rect
+                logical_x = (screen.x - viewport.x) / self.logical_scale
+                logical_y = LOGICAL_HEIGHT - (screen.y - viewport.y) / self.logical_scale
+                self.draw_text_top_left(
+                    str(block_number),
+                    logical_x,
+                    logical_y,
+                    (235, 235, 235),
+                    font_size=8,
+                    anchor_x="center",
+                    anchor_y="center",
+                )
 
-    def draw_player(self):
-        frame, draw_pos = self.get_player_frame_and_pos()
-        if not frame:
+    def draw_hitboxes(self):
+        for block in self.blocks:
+            for rect in block.get("debug_hitboxes", []):
+                self.draw_rect_outline(rect, HITBOX_COLORS["block"], camera=True, width=2)
+        player_rect = self.get_player_collision_rect()
+        if player_rect:
+            world_rect = Rect(
+                int(player_rect.x + self.camera.x),
+                int(player_rect.y + self.camera.y),
+                player_rect.width,
+                player_rect.height,
+            )
+            self.draw_rect_outline(world_rect, HITBOX_COLORS["player"], camera=True, width=2)
+
+    def draw_transition_overlay(self):
+        alpha = self.game_state.get_transition_alpha()
+        if alpha > 0:
+            self.draw_rect(Rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT), (0, 0, 0), alpha=alpha)
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        self.mouse_logical = self.mouse_to_logical(x, y)
+        if self.state == "menu":
+            self.update_menu_hover()
+        elif self.state == "pause":
+            self.update_pause_hover()
+        elif self.state == "settings":
+            self.update_settings_hover()
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        self.mouse_logical = self.mouse_to_logical(x, y)
+        if button != arcade.MOUSE_BUTTON_LEFT:
             return
-        self.render_surface.blit(frame, (int(draw_pos.x), int(draw_pos.y)))
+        if self.state == "menu":
+            if self.get_exit_button_rect().collidepoint(self.mouse_logical):
+                self.close()
+                return
+            self.handle_menu_click()
+        elif self.state == "settings":
+            self.handle_settings_click()
+        elif self.state == "pause":
+            self.handle_pause_click()
 
-    def get_player_frame_and_pos(self):
-        raw_frame, render_scale = self.get_player_source_frame()
-        if not raw_frame:
-            return None, None
-        frame = self.scale_frame_to_tile(raw_frame, render_scale)
-        self.player_mask = self.get_player_collision_mask()
-        draw_pos = self.get_player_draw_pos(frame)
-        return frame, draw_pos
+    def on_key_press(self, symbol, modifiers):
+        self.pressed_keys.add(symbol)
+        if self.state == "menu":
+            if symbol == arcade.key.ENTER:
+                self.start_transition(self.reset)
+            elif symbol == arcade.key.LEFT:
+                self.character_select.select_previous_character()
+            elif symbol == arcade.key.RIGHT:
+                self.character_select.select_next_character()
+            return
+        if self.state == "settings":
+            if symbol == arcade.key.ESCAPE:
+                self.state = self.resolve_settings_return_state("menu")
+                self.apply_display_mode()
+            return
+        if self.state == "pause":
+            pause_keys = self.movement["bindings"].get("pause", set())
+            if symbol == arcade.key.ENTER or symbol in pause_keys:
+                self.state = "play"
+            return
+        if symbol == arcade.key.R:
+            self.reset()
+        if symbol in self.movement["bindings"].get("pause", set()):
+            self.state = "pause"
+
+    def on_key_release(self, symbol, modifiers):
+        self.pressed_keys.discard(symbol)
+
+    def update_menu_hover(self):
+        self.hovered_button = None
+        self.character_select.hovered_arrow = None
+        for key, rect in self.menu_buttons().items():
+            if rect.collidepoint(self.mouse_logical):
+                self.hovered_button = key
+                break
+        select_rects = self.character_select.character_select_rects(self.animation_cache)
+        if select_rects:
+            if select_rects["left"].collidepoint(self.mouse_logical):
+                self.character_select.hovered_arrow = "left"
+            elif select_rects["right"].collidepoint(self.mouse_logical):
+                self.character_select.hovered_arrow = "right"
+
+    def handle_menu_click(self):
+        select_rects = self.character_select.character_select_rects(self.animation_cache)
+        if select_rects and select_rects["left"].collidepoint(self.mouse_logical):
+            self.character_select.select_previous_character()
+            return
+        if select_rects and select_rects["right"].collidepoint(self.mouse_logical):
+            self.character_select.select_next_character()
+            return
+        buttons = self.menu_buttons()
+        if buttons["start"].collidepoint(self.mouse_logical):
+            self.start_transition(self.reset)
+        elif buttons["settings"].collidepoint(self.mouse_logical):
+            self.settings_return_state = "menu"
+            self.state = "settings"
+
+    def update_pause_hover(self):
+        self.hovered_button = None
+        for key, rect in self.pause_overlay.get_button_rects().items():
+            if rect.collidepoint(self.mouse_logical):
+                self.hovered_button = key
+                break
+
+    def handle_pause_click(self):
+        buttons = self.pause_overlay.get_button_rects()
+        if buttons["resume"].collidepoint(self.mouse_logical):
+            self.state = "play"
+        elif buttons["settings"].collidepoint(self.mouse_logical):
+            self.settings_return_state = "pause"
+            self.state = "settings"
+        elif buttons["title"].collidepoint(self.mouse_logical):
+            self.state = "menu"
+
+    def update_settings_hover(self):
+        self.settings_menu.hovered_setting = None
+        for key, rect in self.settings_menu.settings_buttons(self.menu_font).items():
+            if rect.collidepoint(self.mouse_logical):
+                self.settings_menu.hovered_setting = key
+                break
+
+    def handle_settings_click(self):
+        buttons = self.settings_menu.settings_buttons(self.menu_font)
+        if buttons["show_fps"].collidepoint(self.mouse_logical):
+            self.settings_menu.toggle_fps()
+        elif buttons["show_rain"].collidepoint(self.mouse_logical):
+            self.settings_menu.toggle_rain()
+        elif buttons["borderless_fullscreen"].collidepoint(self.mouse_logical):
+            self.settings_menu.toggle_borderless_fullscreen()
+            self.apply_display_mode()
+        elif "show_block_id_overlay" in buttons and buttons["show_block_id_overlay"].collidepoint(self.mouse_logical):
+            self.settings_menu.toggle_block_id_overlay()
+        elif "show_hitboxes" in buttons and buttons["show_hitboxes"].collidepoint(self.mouse_logical):
+            self.settings_menu.toggle_hitboxes()
+        elif buttons["back"].collidepoint(self.mouse_logical):
+            self.state = self.resolve_settings_return_state("menu")
+            if self.state == "menu" and self.settings_menu.show_rain:
+                self.title_rain.reset()
+
+    def resolve_settings_return_state(self, new_state):
+        if new_state == "menu":
+            return self.settings_return_state
+        return new_state
 
     def get_player_source_frame(self):
         character_def = self.character_select.get_selected_character()
@@ -525,19 +895,8 @@ class Game:
         frames, fps = self.get_animation_frames(animation, direction)
         frame_index = int(self.player_anim_time * fps) % len(frames)
         frame = frames[frame_index]
-        render_scale = 1.0
-        if character_def:
-            render_scale = float(character_def.get("scale", 1.0))
+        render_scale = float(character_def.get("scale", 1.0)) if character_def else 1.0
         return frame, render_scale
-
-    def draw_player_high_res(self):
-        raw_frame, render_scale = self.get_player_source_frame()
-        if not raw_frame:
-            return
-        logical_size = self.get_player_logical_size(raw_frame, render_scale)
-        self.player_mask = self.get_player_collision_mask()
-        draw_pos = self.get_player_draw_pos_from_size(logical_size)
-        self.display.blit_logical(raw_frame, draw_pos, logical_size, smooth=False)
 
     def get_player_collision_mask(self):
         character_def = self.character_select.get_selected_character()
@@ -554,7 +913,6 @@ class Game:
         cached = self.player_collider_cache.get(cache_key)
         if cached:
             return cached
-
         sample_rects = []
         for anim_key in ("idle", "walk"):
             anim_id = character_def.get(anim_key)
@@ -567,7 +925,6 @@ class Game:
                     rect = self.get_player_frame_footprint_rect(scaled_frame)
                     if rect:
                         sample_rects.append(rect)
-
         if sample_rects:
             collider = self.create_stable_player_collider(sample_rects)
         else:
@@ -584,15 +941,11 @@ class Game:
         frame_w, frame_h = frame.get_size()
         offset_x = int((tile_size - frame_w) / 2)
         offset_y = int(tile_size - frame_h)
-        frame_mask = pygame.mask.from_surface(frame)
+        frame_mask = AlphaMask.from_image(frame.image)
         visible_rects = frame_mask.get_bounding_rects()
-        if visible_rects:
-            visible_rect = visible_rects[0].unionall(visible_rects[1:])
-        else:
-            visible_rect = pygame.Rect(0, 0, frame_w, frame_h)
-
+        visible_rect = visible_rects[0].unionall(visible_rects[1:]) if visible_rects else Rect(0, 0, frame_w, frame_h)
         hitbox_top = visible_rect.y + visible_rect.height // 2
-        return pygame.Rect(
+        return Rect(
             offset_x + visible_rect.x,
             offset_y + hitbox_top,
             visible_rect.width,
@@ -604,11 +957,9 @@ class Game:
         width = max(1, min(rect.width for rect in sample_rects))
         height = max(1, self.get_middle_value(rect.height for rect in sample_rects))
         bottom = max(rect.bottom for rect in sample_rects)
-        center_x = tile_size // 2
-        left = int(round(center_x - width / 2))
+        left = int(round(tile_size // 2 - width / 2))
         top = int(round(bottom - height))
-        mask = pygame.Mask((width, height), fill=True)
-        return {"mask": mask, "offset": pygame.Vector2(left, top)}
+        return {"mask": AlphaMask((width, height), fill=True), "offset": Vec2(left, top)}
 
     def get_middle_value(self, values):
         values = sorted(int(value) for value in values)
@@ -618,21 +969,13 @@ class Game:
         hitbox_rect = self.get_player_frame_footprint_rect(frame)
         if not hitbox_rect:
             return None
-        mask = pygame.Mask(hitbox_rect.size, fill=True)
-        return {
-            "mask": mask,
-            "offset": pygame.Vector2(hitbox_rect.x, hitbox_rect.y),
-        }
+        return {"mask": AlphaMask(hitbox_rect.size, fill=True), "offset": Vec2(hitbox_rect.x, hitbox_rect.y)}
 
     def get_player_collision_rect(self):
         if not self.player_mask:
             return None
-        if isinstance(self.player_mask, dict):
-            mask = self.player_mask.get("mask")
-            offset = pygame.Vector2(self.player_mask.get("offset", (0, 0)))
-        else:
-            mask = self.player_mask
-            offset = pygame.Vector2(0, 0)
+        mask = self.player_mask.get("mask")
+        offset = Vec2(self.player_mask.get("offset", (0, 0)))
         if not mask:
             return None
         rect = mask.get_rect()
@@ -642,15 +985,12 @@ class Game:
         )
         return rect
 
-    def get_player_draw_pos(self, frame):
-        return self.get_player_draw_pos_from_size(frame.get_size())
-
     def get_player_draw_pos_from_size(self, size):
         tile_size = int(self.region["tile_size"])
         frame_w, frame_h = size
         offset_x = (tile_size - frame_w) / 2
         offset_y = tile_size - frame_h
-        return self.player_pos + pygame.Vector2(offset_x, offset_y) - self.camera
+        return self.player_pos + Vec2(offset_x, offset_y) - self.camera
 
     def get_player_logical_size(self, frame, render_scale=1.0):
         tile_size = int(self.region["tile_size"])
@@ -659,8 +999,7 @@ class Game:
             return frame.get_size()
         target_h = max(1, int(tile_size * max(0.1, render_scale)))
         scale = target_h / frame_h
-        target_w = max(1, int(round(frame_w * scale)))
-        return target_w, target_h
+        return max(1, int(round(frame_w * scale))), target_h
 
     def scale_frame_to_tile(self, frame, render_scale=1.0):
         tile_size = int(self.region["tile_size"])
@@ -677,7 +1016,7 @@ class Game:
         cached = self.frame_cache.get(cache_key)
         if cached:
             return cached
-        scaled = pygame.transform.scale(frame, target)
+        scaled = frame.resize(target)
         self.frame_cache[cache_key] = scaled
         return scaled
 
@@ -687,300 +1026,6 @@ class Game:
         if direction == "down":
             return "forward"
         return direction
-
-    def draw(self):
-        draw_high_res_dev_overlay = False
-        draw_high_res_hitboxes = False
-        draw_high_res_pause = False
-        draw_high_res_title = False
-        if self.state == "menu":
-            self.draw_menu_background()
-            self.draw_menu()
-        elif self.state == "settings":
-            self.draw_menu_background()
-            self.draw_settings_menu()
-        elif self.state == "pause":
-            self.draw_game_layers(include_titles=False)
-            draw_high_res_dev_overlay = self.show_block_id_overlay
-            draw_high_res_hitboxes = self.show_hitboxes
-            draw_high_res_pause = True
-        else:
-            self.draw_game_layers(include_titles=False)
-            draw_high_res_title = True
-            draw_high_res_dev_overlay = self.show_block_id_overlay
-            draw_high_res_hitboxes = self.show_hitboxes
-
-        self.draw_exit_button()
-        self.display.present_base(self.render_surface)
-
-        if draw_high_res_dev_overlay:
-            self.draw_block_id_overlay_high_res()
-        if draw_high_res_hitboxes:
-            self.draw_hitboxes_high_res()
-        if draw_high_res_pause:
-            self.pause_overlay.draw_high_res(self.display, self.hovered_button)
-        if draw_high_res_title:
-            self.region_title.draw_high_res(self.display)
-        if self.show_fps:
-            self.draw_fps_high_res()
-
-        self.draw_transition_overlay_high_res()
-
-        self.display.flip()
-
-    def get_exit_button_rect(self):
-        size = 14
-        margin = 4
-        return pygame.Rect(margin, LOGICAL_HEIGHT - size - margin, size, size)
-
-    def draw_exit_button(self):
-        rect = self.get_exit_button_rect()
-        mouse_pos = self.scale_mouse_pos(pygame.mouse.get_pos())
-        color = COLORS["warning"] if rect.collidepoint(mouse_pos) else COLORS["track"]
-        pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
-
-        label_surface = self.menu_font.render("X", False, COLORS["text"])
-        label_pos = (
-            rect.centerx - label_surface.get_width() // 2,
-            rect.centery - label_surface.get_height() // 2,
-        )
-        self.render_surface.blit(label_surface, label_pos)
-
-    def draw_fps(self):
-        fps_text = f"FPS {self.clock.get_fps():.0f}"
-        fps_surface = self.font.render(fps_text, False, COLORS["text"])
-        self.render_surface.blit(fps_surface, (4, 4))
-
-    def draw_fps_high_res(self):
-        font_size = max(12, int(10 * self.display.scale))
-        font = pygame.font.SysFont(self.hud_font_name, font_size)
-        fps_text = f"FPS {self.clock.get_fps():.0f}"
-        fps_surface = font.render(fps_text, True, COLORS["text"])
-        self.display.screen.blit(fps_surface, self.display.logical_to_screen_pos((4, 4)))
-
-    def draw_block_id_overlay_high_res(self):
-        tile_size = int(self.region["tile_size"])
-        region_width = int(self.region["size"][0])
-        region_height = int(self.region["size"][1])
-        overlay_color = (110, 110, 110)
-        text_color = (235, 235, 235)
-        font_size = max(12, int(8 * self.display.scale))
-        font = pygame.font.SysFont(self.hud_font_name, font_size)
-
-        for tile_y in range(region_height):
-            for tile_x in range(region_width):
-                block_number = coords_to_block_number(tile_x, tile_y, region_width, region_height)
-                logical_rect = pygame.Rect(
-                    int(tile_x * tile_size - self.camera.x),
-                    int(tile_y * tile_size - self.camera.y),
-                    tile_size,
-                    tile_size,
-                )
-                screen_rect = self.display.logical_to_screen_rect(logical_rect)
-                pygame.draw.rect(self.display.screen, overlay_color, screen_rect, 1)
-
-                number_surface = font.render(str(block_number), True, text_color)
-                number_rect = number_surface.get_rect(center=screen_rect.center)
-                self.display.screen.blit(number_surface, number_rect)
-
-    def draw_hitboxes_high_res(self):
-        block_color = HITBOX_COLORS["block"]
-        player_color = HITBOX_COLORS["player"]
-
-        for block in self.blocks:
-            for rect in block.get("debug_hitboxes", []):
-                debug_rect = pygame.Rect(
-                    int(rect.x - self.camera.x),
-                    int(rect.y - self.camera.y),
-                    rect.width,
-                    rect.height,
-                )
-                pygame.draw.rect(self.display.screen, block_color, self.display.logical_to_screen_rect(debug_rect), 2)
-
-        if self.player_mask:
-            player_rect = self.get_player_collision_rect()
-            if player_rect:
-                pygame.draw.rect(self.display.screen, player_color, self.display.logical_to_screen_rect(player_rect), 2)
-
-    def draw_region_effects_high_res(self):
-        light_level = float(self.region.get("light_level", 1.0))
-        if light_level < 1.0:
-            darkness = pygame.Surface(self.display.window_size)
-            darkness.fill((0, 0, 0))
-            darkness.set_alpha(max(0, min(255, int(255 * (1.0 - light_level)))))
-            self.display.screen.blit(darkness, (0, 0))
-        elif light_level > 1.0:
-            brightness = pygame.Surface(self.display.window_size)
-            brightness.fill((255, 255, 255))
-            alpha = int(255 * min(1.0, (light_level - 1.0) * 0.5))
-            brightness.set_alpha(max(0, min(255, alpha)))
-            self.display.screen.blit(brightness, (0, 0))
-
-        if self.region["fog"]["enabled"]:
-            fog_surface = pygame.Surface(self.display.window_size)
-            fog_surface.fill(self.region["fog"]["color"])
-            fog_surface.set_alpha(self.region["fog"]["alpha"])
-            self.display.screen.blit(fog_surface, (0, 0))
-
-    def draw_transition_overlay_high_res(self):
-        alpha = self.game_state.get_transition_alpha()
-        if alpha <= 0:
-            return
-        overlay = pygame.Surface(self.display.window_size)
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(alpha)
-        self.display.screen.blit(overlay, (0, 0))
-
-    def handle_input(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.get_exit_button_rect().collidepoint(self.scale_mouse_pos(event.pos)):
-                pygame.quit()
-                sys.exit()
-
-        if self.state == "menu":
-            self.handle_menu_input(event)
-            return
-        if self.state == "settings":
-            self.handle_settings_input(event)
-            return
-        if self.state == "pause":
-            self.handle_pause_input(event)
-            return
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-            self.reset()
-        # Check for pause key
-        if event.type == pygame.KEYDOWN:
-            pause_keys = self.movement["bindings"].get("pause", set())
-            if event.key in pause_keys:
-                self.state = "pause"
-
-    def menu_buttons(self):
-        layout = self.character_select.get_menu_layout(self.animation_cache)
-        button_w = 120
-        button_h = 18
-        button_gap = 8
-        center_x = LOGICAL_WIDTH // 2 - button_w // 2
-        start_rect = pygame.Rect(center_x, layout["buttons_top"], button_w, button_h)
-        settings_rect = pygame.Rect(center_x, layout["buttons_top"] + button_h + button_gap, button_w, button_h)
-        return {"start": start_rect, "settings": settings_rect}
-
-    def draw_menu(self):
-        layout = self.character_select.get_menu_layout(self.animation_cache)
-        title_sprite = self.textures.get("ui/title_text.png", (210, 21))
-        title_pos = (LOGICAL_WIDTH // 2 - title_sprite.get_width() // 2, layout["title_y"])
-        self.character_select.draw(self.render_surface, self.animation_cache)
-        self.render_surface.blit(title_sprite, title_pos)
-
-        buttons = self.menu_buttons()
-        for key, rect in buttons.items():
-            color = COLORS["warning"] if self.hovered_button == key else COLORS["track"]
-            pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
-            label = "START GAME" if key == "start" else "SETTINGS"
-            label_surface = self.menu_font.render(label, False, COLORS["text"])
-            label_pos = (
-                rect.centerx - label_surface.get_width() // 2,
-                rect.centery - label_surface.get_height() // 2,
-            )
-            self.render_surface.blit(label_surface, label_pos)
-
-    def handle_menu_input(self, event):
-        buttons = self.menu_buttons()
-        select_rects = self.character_select.character_select_rects(self.animation_cache)
-        if event.type == pygame.MOUSEMOTION:
-            pos = self.scale_mouse_pos(event.pos)
-            self.hovered_button = None
-            self.character_select.hovered_arrow = None
-            for key, rect in buttons.items():
-                if rect.collidepoint(pos):
-                    self.hovered_button = key
-                    break
-            if select_rects:
-                if select_rects["left"].collidepoint(pos):
-                    self.character_select.hovered_arrow = "left"
-                elif select_rects["right"].collidepoint(pos):
-                    self.character_select.hovered_arrow = "right"
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            pos = self.scale_mouse_pos(event.pos)
-            if select_rects and select_rects["left"].collidepoint(pos):
-                self.character_select.select_previous_character()
-                return
-            if select_rects and select_rects["right"].collidepoint(pos):
-                self.character_select.select_next_character()
-                return
-            if buttons["start"].collidepoint(pos):
-                self.start_transition(self.reset)
-            elif buttons["settings"].collidepoint(pos):
-                self.settings_return_state = "menu"
-                self.state = "settings"
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-            self.start_transition(self.reset)
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
-            self.character_select.select_previous_character()
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
-            self.character_select.select_next_character()
-
-    def handle_pause_input(self, event):
-        buttons = self.pause_overlay.get_button_rects()
-        if event.type == pygame.MOUSEMOTION:
-            pos = self.scale_mouse_pos(event.pos)
-            self.hovered_button = None
-            for key, rect in buttons.items():
-                if rect.collidepoint(pos):
-                    self.hovered_button = key
-                    break
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            pos = self.scale_mouse_pos(event.pos)
-            if buttons["resume"].collidepoint(pos):
-                self.state = "play"
-            elif buttons["settings"].collidepoint(pos):
-                self.settings_return_state = "pause"
-                self.state = "settings"
-            elif buttons["title"].collidepoint(pos):
-                self.state = "menu"
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-            self.state = "play"
-        pause_keys = self.movement["bindings"].get("pause", set())
-        if event.type == pygame.KEYDOWN and event.key in pause_keys:
-            self.state = "play"
-
-    def handle_settings_input(self, event):
-        # Scale mouse position for settings menu input
-        if event.type == pygame.MOUSEMOTION:
-            pos = self.scale_mouse_pos(event.pos)
-            # Create a new event with scaled position for settings menu
-            scaled_event = pygame.event.Event(pygame.MOUSEMOTION, {"pos": pos})
-            new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
-            if new_state != "settings":
-                self.state = self.resolve_settings_return_state(new_state)
-                # Apply display changes (e.g. borderless) when leaving settings
-                self.display.apply_display_mode(self.settings_menu)
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            pos = self.scale_mouse_pos(event.pos)
-            scaled_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": event.button})
-            new_state = self.settings_menu.handle_input(scaled_event, self.menu_font)
-            if new_state != "settings":
-                self.state = self.resolve_settings_return_state(new_state)
-                # Apply display changes (e.g. borderless) when leaving settings
-                self.display.apply_display_mode(self.settings_menu)
-                if self.state == "menu" and self.settings_menu.show_rain:
-                    self.title_rain.reset()
-        else:
-            new_state = self.settings_menu.handle_input(event, self.menu_font)
-            if new_state != "settings":
-                self.state = self.resolve_settings_return_state(new_state)
-                # Apply display changes (e.g. borderless) when leaving settings
-                self.display.apply_display_mode(self.settings_menu)
-
-    def draw_settings_menu(self):
-        self.settings_menu.draw(self.render_surface, self.menu_font)
-
-    def resolve_settings_return_state(self, new_state):
-        if new_state == "menu":
-            return self.settings_return_state
-        return new_state
-
-    def scale_mouse_pos(self, pos):
-        return self.display.scale_mouse_pos(pos)
 
     def _build_character_list(self, characters):
         characters = list(characters)
@@ -992,14 +1037,10 @@ class Game:
             return None
         if anim_id in self.animation_cache:
             return self.animation_cache[anim_id]
-        if anim_id in self.character_select.character_animations:
-            source_defs = self.character_select.character_animations
-        else:
-            source_defs = self.entity_defs
+        source_defs = self.character_select.character_animations if anim_id in self.character_select.character_animations else self.entity_defs
         animation = load_animation(source_defs, anim_id, self.textures.root_dir)
-        if not animation:
-            return None
-        self.animation_cache[anim_id] = animation
+        if animation:
+            self.animation_cache[anim_id] = animation
         return animation
 
     def get_animation_frames(self, animation, preferred):
@@ -1010,17 +1051,6 @@ class Game:
         return first_sequence, animation["fps"]
 
 
-    def run(self):
-        while True:
-            dt = self.clock.tick(FPS) / 1000.0
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                self.handle_input(event)
-            self.update(dt)
-            self.draw()
-
-
 if __name__ == "__main__":
-    Game().run()
+    Game()
+    arcade.run()
