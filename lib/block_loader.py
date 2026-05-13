@@ -45,7 +45,7 @@ def normalize_block_def(block_data):
         "size": size,
         "brightness": max(0.0, float(block_data.get("brightness", 1.0))),
         "hitbox_type": hitbox_type,
-        "hitbox_ratio": max(0.0, min(1.0, float(block_data.get("hitbox_ratio", 1.0)))),
+        "hitbox_ratio": max(0.0, float(block_data.get("hitbox_ratio", 1.0))),
         "texture_size": sanitize_size(texture_size) if texture_size else None,
         "origin": origin,
         "solid_rects": solid_rects,

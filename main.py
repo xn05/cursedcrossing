@@ -32,6 +32,22 @@ from lib.settings import (
 )
 
 
+DEFAULT_RENDER_STAGE_ORDER = [
+    "region_background",
+    "background_blocks",
+    "region_border",
+    "blocks",
+    "player",
+    "particles",
+    "fog",
+    "titles",
+]
+
+DEFAULT_RENDER_LAYERS = {
+    stage: layer for layer, stage in enumerate(DEFAULT_RENDER_STAGE_ORDER)
+}
+
+
 class Game:
     def __init__(self):
         pygame.init()
@@ -160,6 +176,18 @@ class Game:
                 effects.append(RainSystem(particle_def))
         return effects
 
+    def normalize_render_layers(self, configured_layers):
+        render_layers = dict(DEFAULT_RENDER_LAYERS)
+        if isinstance(configured_layers, dict):
+            for key, value in configured_layers.items():
+                if key not in render_layers:
+                    continue
+                try:
+                    render_layers[key] = max(0, min(10, int(value)))
+                except (TypeError, ValueError):
+                    continue
+        return render_layers
+
     def start_transition(self, on_midpoint):
         self.game_state.start_transition(on_midpoint)
 
@@ -195,6 +223,7 @@ class Game:
             "blocks": data.get("blocks", []),
             "background_blocks": data.get("background_blocks", []),
             "ambient_particles": data.get("ambient_particles", []),
+            "render_layers": self.normalize_render_layers(data.get("render_layers", {})),
         }
 
     def get_region_origin(self):
@@ -285,8 +314,9 @@ class Game:
         surface = self.render_surface
         surface.fill(self.region["color"])
         self.draw_background_blocks(surface)
-        for particle_system in self.region_particle_effects:
-            particle_system.draw(surface, self.textures)
+
+    def draw_region_background_color(self, surface):
+        surface.fill(self.region["color"])
 
     def draw_background_blocks(self, surface):
         for block in self.background_blocks:
@@ -322,6 +352,120 @@ class Game:
             sprite = self.apply_block_brightness(sprite, block_def)
             draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
             self.render_surface.blit(sprite, (int(draw_pos.x), int(draw_pos.y)))
+
+    def draw_particles(self, surface):
+        for particle_system in self.region_particle_effects:
+            particle_system.draw(surface, self.textures)
+
+    def draw_region_effects(self, surface):
+        light_level = float(self.region.get("light_level", 1.0))
+        if light_level < 1.0:
+            darkness = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            darkness.fill((0, 0, 0, max(0, min(255, int(255 * (1.0 - light_level))))))
+            surface.blit(darkness, (0, 0))
+        elif light_level > 1.0:
+            brightness = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            alpha = int(255 * min(1.0, (light_level - 1.0) * 0.5))
+            brightness.fill((255, 255, 255, max(0, min(255, alpha))))
+            surface.blit(brightness, (0, 0))
+
+        if self.region["fog"]["enabled"]:
+            fog_surface = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            fog_surface.fill((*self.region["fog"]["color"], self.region["fog"]["alpha"]))
+            surface.blit(fog_surface, (0, 0))
+
+    def draw_region_title(self, surface):
+        self.region_title.draw(surface)
+
+    def get_render_stages(self, include_titles=True):
+        stages = {
+            "region_background": lambda: self.draw_region_background_color(self.render_surface),
+            "background_blocks": lambda: self.draw_background_blocks(self.render_surface),
+            "region_border": self.draw_region,
+            "blocks": self.draw_blocks,
+            "player": self.draw_player,
+            "particles": lambda: self.draw_particles(self.render_surface),
+            "fog": lambda: self.draw_region_effects(self.render_surface),
+            "titles": lambda: self.draw_region_title(self.render_surface),
+        }
+        if not include_titles:
+            stages.pop("titles", None)
+
+        order_index = {stage: index for index, stage in enumerate(DEFAULT_RENDER_STAGE_ORDER)}
+        render_layers = self.region.get("render_layers", DEFAULT_RENDER_LAYERS)
+        return sorted(
+            stages.items(),
+            key=lambda item: (render_layers.get(item[0], DEFAULT_RENDER_LAYERS[item[0]]), order_index[item[0]]),
+        )
+
+    def get_render_stage_names(self, include_titles=True):
+        stage_names = list(DEFAULT_RENDER_STAGE_ORDER)
+        if not include_titles:
+            stage_names.remove("titles")
+
+        order_index = {stage: index for index, stage in enumerate(DEFAULT_RENDER_STAGE_ORDER)}
+        render_layers = self.region.get("render_layers", DEFAULT_RENDER_LAYERS)
+        return sorted(
+            stage_names,
+            key=lambda stage: (render_layers.get(stage, DEFAULT_RENDER_LAYERS[stage]), order_index[stage]),
+        )
+
+    def draw_game_layers(self, include_titles=True):
+        self.render_surface.fill((0, 0, 0))
+        for _, draw_stage in self.get_render_stages(include_titles):
+            draw_stage()
+
+    def draw_region_background_color_high_res(self):
+        self.display.screen.fill(self.region["color"])
+
+    def draw_region_border_high_res(self):
+        if not self.region["border_enabled"]:
+            return
+        screen_rect = self.display.logical_to_screen_rect(self.get_region_render_rect())
+        pygame.draw.rect(self.display.screen, self.region["border_color"], screen_rect, max(1, int(self.display.scale)))
+
+    def draw_block_collection_high_res(self, blocks):
+        for block in blocks:
+            block_def = block["definition"]
+            texture_path = block_def.get("texture")
+            size = block["sprite_size"]
+            sprite = self.textures.get_raw(texture_path)
+            sprite = self.apply_block_brightness(sprite, block_def)
+            draw_pos = block["draw_pos"] + block["sprite_offset"] - self.camera
+            self.display.blit_logical(sprite, draw_pos, (int(size[0]), int(size[1])), smooth=True)
+
+    def draw_background_blocks_high_res(self):
+        self.draw_block_collection_high_res(self.background_blocks)
+
+    def draw_blocks_high_res(self):
+        self.draw_block_collection_high_res(self.blocks)
+
+    def draw_particles_high_res(self):
+        for particle_system in self.region_particle_effects:
+            for particle in particle_system.particles:
+                sprite = self.textures.get_raw(particle["texture"])
+                if particle_system.fade:
+                    sprite = sprite.copy()
+                    remaining = max(0.0, 1.0 - particle["age"] / particle_system.lifetime)
+                    sprite.set_alpha(int(255 * remaining))
+                self.display.blit_logical(sprite, particle["pos"], sprite.get_size(), smooth=True)
+
+    def draw_region_title_high_res(self):
+        self.region_title.draw_high_res(self.display)
+
+    def draw_game_layers_high_res(self, include_titles=True):
+        stages = {
+            "region_background": self.draw_region_background_color_high_res,
+            "background_blocks": self.draw_background_blocks_high_res,
+            "region_border": self.draw_region_border_high_res,
+            "blocks": self.draw_blocks_high_res,
+            "player": self.draw_player_high_res,
+            "particles": self.draw_particles_high_res,
+            "fog": self.draw_region_effects_high_res,
+            "titles": self.draw_region_title_high_res,
+        }
+        for stage_name in self.get_render_stage_names(include_titles):
+            stages[stage_name]()
 
     def apply_block_brightness(self, sprite, block_def):
         brightness = float(block_def.get("brightness", 1.0))
@@ -545,11 +689,10 @@ class Game:
         return direction
 
     def draw(self):
-        draw_high_res_player = False
-        draw_high_res_title = False
         draw_high_res_dev_overlay = False
         draw_high_res_hitboxes = False
         draw_high_res_pause = False
+        draw_high_res_title = False
         if self.state == "menu":
             self.draw_menu_background()
             self.draw_menu()
@@ -557,42 +700,51 @@ class Game:
             self.draw_menu_background()
             self.draw_settings_menu()
         elif self.state == "pause":
-            self.draw_background()
-            self.draw_region()
-            self.draw_blocks()
-            draw_high_res_player = True
+            self.draw_game_layers(include_titles=False)
             draw_high_res_dev_overlay = self.show_block_id_overlay
             draw_high_res_hitboxes = self.show_hitboxes
             draw_high_res_pause = True
         else:
-            self.draw_background()
-            self.draw_region()
-            self.draw_blocks()
-            draw_high_res_player = True
+            self.draw_game_layers(include_titles=False)
             draw_high_res_title = True
             draw_high_res_dev_overlay = self.show_block_id_overlay
             draw_high_res_hitboxes = self.show_hitboxes
 
+        self.draw_exit_button()
         self.display.present_base(self.render_surface)
 
-        if draw_high_res_player:
-            self.draw_player_high_res()
-        if self.state in ("play", "pause"):
-            self.draw_region_effects_high_res()
         if draw_high_res_dev_overlay:
             self.draw_block_id_overlay_high_res()
         if draw_high_res_hitboxes:
             self.draw_hitboxes_high_res()
-        if draw_high_res_title:
-            self.region_title.draw_high_res(self.display)
         if draw_high_res_pause:
             self.pause_overlay.draw_high_res(self.display, self.hovered_button)
+        if draw_high_res_title:
+            self.region_title.draw_high_res(self.display)
         if self.show_fps:
             self.draw_fps_high_res()
 
         self.draw_transition_overlay_high_res()
 
         self.display.flip()
+
+    def get_exit_button_rect(self):
+        size = 14
+        margin = 4
+        return pygame.Rect(margin, LOGICAL_HEIGHT - size - margin, size, size)
+
+    def draw_exit_button(self):
+        rect = self.get_exit_button_rect()
+        mouse_pos = self.scale_mouse_pos(pygame.mouse.get_pos())
+        color = COLORS["warning"] if rect.collidepoint(mouse_pos) else COLORS["track"]
+        pygame.draw.rect(self.render_surface, color, rect, border_radius=3)
+
+        label_surface = self.menu_font.render("X", False, COLORS["text"])
+        label_pos = (
+            rect.centerx - label_surface.get_width() // 2,
+            rect.centery - label_surface.get_height() // 2,
+        )
+        self.render_surface.blit(label_surface, label_pos)
 
     def draw_fps(self):
         fps_text = f"FPS {self.clock.get_fps():.0f}"
@@ -680,6 +832,11 @@ class Game:
         self.display.screen.blit(overlay, (0, 0))
 
     def handle_input(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.get_exit_button_rect().collidepoint(self.scale_mouse_pos(event.pos)):
+                pygame.quit()
+                sys.exit()
+
         if self.state == "menu":
             self.handle_menu_input(event)
             return

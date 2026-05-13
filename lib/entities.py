@@ -27,6 +27,23 @@ class TextureManager:
         self.cache[key] = placeholder
         return placeholder
 
+    def get_raw(self, texture_path):
+        key = (texture_path, None)
+        if key in self.cache:
+            return self.cache[key]
+        if texture_path:
+            full_path = f"{self.root_dir}/{texture_path}"
+            try:
+                surface = pygame.image.load(full_path).convert_alpha()
+                self.cache[key] = surface
+                return surface
+            except FileNotFoundError:
+                pass
+        placeholder = pygame.Surface((1, 1), pygame.SRCALPHA)
+        placeholder.fill((160, 160, 160))
+        self.cache[key] = placeholder
+        return placeholder
+
     def get_image_size(self, texture_path):
         if not texture_path:
             return None

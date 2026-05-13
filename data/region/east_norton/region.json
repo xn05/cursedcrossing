@@ -3,12 +3,22 @@
   "tile_size": 32,
   "size": [10, 10],
   "player_spawn": [6, 3],
-  "light_level": 0.6,
+  "light_level": 0.7,
   "cover_screen": true,
   "color": [20, 22, 26],
   "border_color": [36, 38, 44],
   "border_enabled": false,
   "rain_enabled": false,
+  "render_layers": {
+    "region_background": 0,
+    "background_blocks": 1,
+    "region_border": 2,
+    "blocks": 3,
+    "player": 4,
+    "particles": 5,
+    "fog": 6,
+    "titles": 7
+  },
   "fog": {
     "enabled": true,
     "color": [110, 120, 130],
@@ -24,6 +34,7 @@
   "ambient_particles": [
     {
       "enabled": false,
+      "__effect_types": "rain, random",
       "effect": "rain",
       "spawn": "edge",
       "frequency": 80,
@@ -39,14 +50,16 @@
   "background_blocks": [
     {
       "id": "grass",
-      "numbers_fill": [1, 100]
+      "numbers_fill": [1, 100],
+      "layer": 0
+    },
+    {
+      "id": "grass_edge_horizontal",
+      "numbers_fill": [51, 60],
+      "layer": 1
     }
   ],
   "blocks": [
-    {
-      "id": "grass_edge_horizontal",
-      "numbers_fill": [51, 60]
-    },
     {
       "id": "bush1",
       "numbers": [61, 69]

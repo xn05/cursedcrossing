@@ -87,6 +87,14 @@ def get_centered_rect(draw_pos, width, height, rect_width, rect_height):
     )
 
 
+def get_placement_layer(placement):
+    try:
+        layer = int(placement.get("layer", 0))
+    except (TypeError, ValueError):
+        layer = 0
+    return max(0, min(10, layer))
+
+
 def union_rects(rects):
     if not rects:
         return []
@@ -102,7 +110,7 @@ def build_hitboxes(block_def, draw_pos, sprite_pos, block_size, tile_size, mask)
         return [], []
 
     hitbox_type = block_def.get("hitbox_type", "pixel")
-    ratio = max(0.0, min(1.0, float(block_def.get("hitbox_ratio", 1.0))))
+    ratio = max(0.0, float(block_def.get("hitbox_ratio", 1.0)))
     block_w, block_h = block_size
 
     if hitbox_type == "square":
@@ -141,24 +149,21 @@ def get_block_sprite_layout(block_def, block_size, textures):
         return block_size, pygame.Vector2(0, 0)
 
     if texture_override:
-        native_size = (int(texture_override[0]), int(texture_override[1]))
+        sprite_size = (int(texture_override[0]), int(texture_override[1]))
     else:
-        native_size = textures.get_image_size(texture_path)
-    if not native_size or native_size[0] <= 0 or native_size[1] <= 0:
+        sprite_size = textures.get_image_size(texture_path)
+    if not sprite_size or sprite_size[0] <= 0 or sprite_size[1] <= 0:
         return block_size, pygame.Vector2(0, 0)
 
-    scale = block_size[0] / native_size[0]
-    sprite_w = block_size[0]
-    sprite_h = max(1, int(native_size[1] * scale))
-    offset_y = block_size[1] - sprite_h
-    return (sprite_w, sprite_h), pygame.Vector2(0, offset_y)
+    offset_y = block_size[1] - sprite_size[1]
+    return sprite_size, pygame.Vector2(0, offset_y)
 
 
 def build_blocks(region, block_defs, textures):
     blocks = []
     tile_size = region["tile_size"]
     region_size = region.get("size", [50, 50])
-    for placement in region.get("blocks", []):
+    for placement_index, placement in enumerate(region.get("blocks", [])):
         block_id = placement.get("id")
         if not block_id:
             continue
@@ -191,6 +196,8 @@ def build_blocks(region, block_defs, textures):
             blocks.append(
                 {
                     "definition": block_def,
+                    "layer": get_placement_layer(placement),
+                    "placement_index": placement_index,
                     "draw_pos": draw_pos,
                     "block_size": max(block_size),
                     "sprite_size": sprite_size,
@@ -201,14 +208,14 @@ def build_blocks(region, block_defs, textures):
                     "passable_rects": passable_rects,
                 }
             )
-    return blocks
+    return sorted(blocks, key=lambda block: (block["layer"], block["placement_index"]))
 
 
 def build_background_blocks(region, block_defs, textures):
     background_blocks = []
     tile_size = region["tile_size"]
     region_size = region.get("size", [50, 50])
-    for placement in region.get("background_blocks", []):
+    for placement_index, placement in enumerate(region.get("background_blocks", [])):
         block_id = placement.get("id")
         if not block_id:
             continue
@@ -232,6 +239,8 @@ def build_background_blocks(region, block_defs, textures):
             background_blocks.append(
                 {
                     "definition": block_def,
+                    "layer": get_placement_layer(placement),
+                    "placement_index": placement_index,
                     "draw_pos": draw_pos,
                     "block_size": max(block_size),
                     "sprite_size": sprite_size,
@@ -240,7 +249,7 @@ def build_background_blocks(region, block_defs, textures):
                     "passable_rects": passable_rects,
                 }
             )
-    return background_blocks
+    return sorted(background_blocks, key=lambda block: (block["layer"], block["placement_index"]))
 
 
 def get_solids(blocks):

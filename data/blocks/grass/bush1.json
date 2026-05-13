@@ -2,11 +2,11 @@
   "id": "bush1",
   "name": "Bush 1",
   "texture": "blocks/grass/bush1.png",
-  "size": [2, 1],
+  "size": [4, 2],
   "origin": 1,
   "brightness": 1.0,
   "hitbox_type": "square",
-  "hitbox_ratio": 0.8,
+  "hitbox_ratio": 1.4,
   "solid_rects": [1, 2],
   "passable_rects": []
 }
