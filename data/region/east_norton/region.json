@@ -1,6 +1,6 @@
 {
   "id": "east_norton",
-  "tile_size": 32,
+  "tile_size": 24,
   "size": [10, 10],
   "player_spawn": [6, 3],
   "light_level": 0.7,
@@ -33,7 +33,7 @@
   },
   "ambient_particles": [
     {
-      "enabled": false,
+      "enabled": true,
       "__effect_types": "rain, random",
       "effect": "rain",
       "spawn": "edge",

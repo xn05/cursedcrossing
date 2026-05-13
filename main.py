@@ -1,7 +1,9 @@
 import json
 import os
+import sys
 
 import arcade
+import pyglet
 from arcade.types import Color
 from PIL import Image, ImageDraw, ImageFont
 
@@ -32,6 +34,20 @@ from lib.settings import (
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
+
+
+WINDOWS_APP_ID = "cursedcrossing.game"
+
+
+def configure_windows_taskbar_icon():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+    except Exception:
+        return
 
 
 DEFAULT_RENDER_STAGE_ORDER = [
@@ -93,8 +109,10 @@ class Game(arcade.Window):
         config_dir = os.path.join(base_dir, "config")
         textures_dir = os.path.join(base_dir, "assets", "textures")
         font_path = os.path.join(base_dir, "assets", "font", "main.ttf")
+        icon_path = os.path.join(textures_dir, "icon", "icon.png")
         settings_path = os.path.join(config_dir, "settings.json")
 
+        self.set_window_icon(icon_path)
         self.menu_font = FontMetrics(6)
         self.font_path = font_path
         self.hud_font_name = "main"
@@ -152,6 +170,19 @@ class Game(arcade.Window):
         self.settings_return_state = "menu"
         self.reset_player()
         self.apply_display_mode()
+
+    def set_window_icon(self, icon_path):
+        if not os.path.exists(icon_path):
+            return
+        try:
+            icon_image = Image.open(icon_path).convert("RGBA")
+            icons = []
+            for size in (16, 32, 48, 64, 128, 256):
+                resized = icon_image.resize((size, size), Image.Resampling.LANCZOS)
+                icons.append(pyglet.image.ImageData(size, size, "RGBA", resized.tobytes(), pitch=-size * 4))
+            self.set_icon(*icons)
+        except Exception:
+            return
 
     @property
     def show_rain(self):
@@ -551,8 +582,9 @@ class Game(arcade.Window):
 
     def draw_particles(self, particle_system, camera=False):
         for particle in particle_system.particles:
-            texture = self.textures.get_arcade(particle["texture"])
-            size = self.textures.get_image_size(particle["texture"]) or (2, 4)
+            size = tuple(particle.get("size", (2, 4)))
+            frame = self.textures.get(particle["texture"], size)
+            texture = self.textures.get_arcade_from_frame(frame, ("particle", particle["texture"], size))
             alpha = 255
             if particle_system.fade:
                 remaining = max(0.0, 1.0 - particle["age"] / particle_system.lifetime)
@@ -1052,5 +1084,6 @@ class Game(arcade.Window):
 
 
 if __name__ == "__main__":
+    configure_windows_taskbar_icon()
     Game()
     arcade.run()
