@@ -11,6 +11,26 @@
 			}
 		},
 		{
+			"id": "nightingale",
+			"display_name": "Nightingale",
+			"selectable": true,
+			"scale": 1.6,
+			"animations": {
+				"idle": "nightingale/nightingale_idle.json",
+				"walk": "nightingale/nightingale_walk.json"
+			}
+		},
+		{
+			"id": "aurelia",
+			"display_name": "Aurelia",
+			"selectable": true,
+			"scale": 1.6,
+			"animations": {
+				"idle": "aurelia/aurelia_idle.json",
+				"walk": "aurelia/aurelia_walk.json"
+			}
+		},
+		{
 			"id": "black_grouse",
 			"display_name": "Black Grouse",
 			"selectable": true,

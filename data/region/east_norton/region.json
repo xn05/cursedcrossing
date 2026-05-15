@@ -1,8 +1,8 @@
 {
   "id": "east_norton",
   "tile_size": 24,
-  "size": [10, 10],
-  "player_spawn": [6, 3],
+  "size": [12, 12],
+  "player_spawn": [6, 9],
   "light_level": 0.7,
   "cover_screen": true,
   "color": [20, 22, 26],
@@ -33,7 +33,7 @@
   },
   "ambient_particles": [
     {
-      "enabled": true,
+      "enabled": false,
       "__effect_types": "rain, random",
       "effect": "rain",
       "spawn": "edge",
@@ -50,12 +50,12 @@
   "background_blocks": [
     {
       "id": "grass",
-      "numbers_fill": [1, 100],
+      "numbers_fill": [1, 144],
       "layer": 0
     },
     {
       "id": "grass_edge_horizontal",
-      "numbers_fill": [51, 60],
+      "numbers_fill": [49, 60],
       "layer": 1
     }
   ],

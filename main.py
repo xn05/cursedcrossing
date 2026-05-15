@@ -116,6 +116,8 @@ class Game(arcade.Window):
         self.menu_font = FontMetrics(6)
         self.font_path = font_path
         self.hud_font_name = "main"
+        self.system_text_cache = {}
+        self.block_id_overlay_cache = None
         self.pause_overlay = PauseOverlay(None)
         self.entity_defs = load_entity_defs(data_dir)
         self.textures = TextureManager(textures_dir)
@@ -491,6 +493,52 @@ class Game(arcade.Window):
 
         self.draw_texture(texture, draw_x, draw_y, width, height, alpha=alpha, pixelated=True)
 
+    def draw_system_text_top_left(
+        self,
+        text,
+        x,
+        y,
+        color,
+        font_size=8,
+        anchor_x="left",
+        anchor_y="top",
+        alpha=255,
+        cache_key=None,
+    ):
+        viewport = self.viewport_rect
+        scale = self.logical_scale
+        screen_x = viewport.x + x * scale
+        screen_y = viewport.y + (LOGICAL_HEIGHT - y) * scale
+        text_value = str(text)
+        screen_font_size = max(1, font_size * scale)
+        text_color = (*color, int(alpha))
+        if cache_key is None:
+            cache_key = (text_value, text_color, font_size, anchor_x, anchor_y)
+
+        text_obj = self.system_text_cache.get(cache_key)
+        if text_obj is None:
+            text_obj = arcade.Text(
+                text_value,
+                screen_x,
+                screen_y,
+                text_color,
+                font_size=screen_font_size,
+                font_name=("calibri", "arial"),
+                anchor_x=anchor_x,
+                anchor_y=anchor_y,
+            )
+            self.system_text_cache[cache_key] = text_obj
+        else:
+            text_obj.text = text_value
+            text_obj.x = screen_x
+            text_obj.y = screen_y
+            text_obj.color = text_color
+            text_obj.font_size = screen_font_size
+            text_obj.anchor_x = anchor_x
+            text_obj.anchor_y = anchor_y
+
+        text_obj.draw()
+
     def on_draw(self):
         self.clear()
         if self.state == "menu":
@@ -743,30 +791,60 @@ class Game(arcade.Window):
             self.draw_button(rect, label, self.hovered_button == key)
 
     def draw_fps(self):
-        self.draw_text_top_left(f"FPS {self.current_fps:.0f}", 4, 4, COLORS["text"], font_size=8)
+        self.draw_system_text_top_left(
+            f"FPS {self.current_fps:.0f}",
+            4,
+            4,
+            COLORS["text"],
+            font_size=8,
+            cache_key=("fps",),
+        )
 
     def draw_block_id_overlay(self):
         tile_size = int(self.region["tile_size"])
         region_width = int(self.region["size"][0])
         region_height = int(self.region["size"][1])
+        texture, width, height = self.get_block_id_overlay_texture(region_width, region_height, tile_size)
+        self.draw_texture(texture, 0, 0, width, height, camera=True, pixelated=True)
+
+    def get_block_id_overlay_texture(self, region_width, region_height, tile_size):
+        cache_key = (region_width, region_height, tile_size)
+        if self.block_id_overlay_cache and self.block_id_overlay_cache[0] == cache_key:
+            return self.block_id_overlay_cache[1]
+
+        width = max(1, region_width * tile_size)
+        height = max(1, region_height * tile_size)
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        grid_color = (110, 110, 110, 255)
+        text_color = (235, 235, 235, 255)
+        try:
+            font = ImageFont.truetype("arial.ttf", max(1, int(tile_size * 0.35)))
+        except OSError:
+            font = ImageFont.load_default()
+
+        for x in range(region_width + 1):
+            px = x * tile_size
+            draw.line((px, 0, px, height), fill=grid_color, width=1)
+        for y in range(region_height + 1):
+            py = y * tile_size
+            draw.line((0, py, width, py), fill=grid_color, width=1)
+
         for tile_y in range(region_height):
             for tile_x in range(region_width):
-                block_number = coords_to_block_number(tile_x, tile_y, region_width, region_height)
-                rect = Rect(tile_x * tile_size, tile_y * tile_size, tile_size, tile_size)
-                self.draw_rect_outline(rect, (110, 110, 110), camera=True)
-                screen = self.logical_to_screen_rect(rect, camera=True)
-                viewport = self.viewport_rect
-                logical_x = (screen.x - viewport.x) / self.logical_scale
-                logical_y = LOGICAL_HEIGHT - (screen.y - viewport.y) / self.logical_scale
-                self.draw_text_top_left(
-                    str(block_number),
-                    logical_x,
-                    logical_y,
-                    (235, 235, 235),
-                    font_size=8,
-                    anchor_x="center",
-                    anchor_y="center",
-                )
+                block_number = str(coords_to_block_number(tile_x, tile_y, region_width, region_height))
+                bbox = draw.textbbox((0, 0), block_number, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                x = tile_x * tile_size + (tile_size - text_w) / 2 - bbox[0]
+                y = tile_y * tile_size + (tile_size - text_h) / 2 - bbox[1]
+                draw.text((x, y), block_number, font=font, fill=text_color)
+
+        alpha = image.getchannel("A").point(lambda value: 255 if value >= 96 else 0)
+        image.putalpha(alpha)
+        cached = (arcade.Texture(image), width, height)
+        self.block_id_overlay_cache = (cache_key, cached)
+        return cached
 
     def draw_hitboxes(self):
         for block in self.blocks:

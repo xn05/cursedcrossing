@@ -6,10 +6,10 @@
   "fade_in_duration": 1,
   "fog_alpha": 50,
   "rain_drops": 40,
-  "show_rain": true,
+  "show_rain": false,
   "show_fps": false,
   "show_block_id_overlay": false,
-  "show_hitboxes": true,
+  "show_hitboxes": false,
   "hitbox_colors": {
     "player": [
       80,
